@@ -1,0 +1,692 @@
+---
+title: "miRNA-mRNA Interactions in NUP98-R for miR-10a"
+author: "Jenny Smith"
+date: "November 5, 2020"
+output: html_document
+---
+
+# Set-up
+
+```{r setup}
+library(knitr)
+
+knitr::opts_knit$set(root.dir = file.path(PROJHOME,"2020.03.26_NUP98.Rearranged_Collab/miRNA"))
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE, fig.align='center', message = FALSE, fig.width = 5, fig.height = 5)
+options(stringsAsFactors = FALSE)
+```
+
+```{r}
+library(ggplot2)
+library(stringr)
+library(magrittr)
+library(dplyr)
+library(tidyr)
+library(tibble)
+# library(XML)
+library(DeGSEA)
+getwd()
+```
+
+
+# Define Functions to be used
+
+```{r}
+corr.miRNA.mRNA <- function(miRNA.Expn, gene.Expn){
+  # library(ggplot2)
+  # library(psych)
+  
+  # miRNA.Expn is a named numeric vector of miRNA log2 RPMs or TMM normalized counts
+  #gene.Expn is a named numeric vector of mRNA log2 normalized expn (CPM, TPM, RPKM, etc)
+  
+
+  #Subset for the group of interest and ensure same order in expression sets
+  miRE <- t(miRNA.Expn)
+  GE <- t(gene.Expn)
+  
+  #combine the expression sets
+  expn.g1 <- miRE %>%
+    as.data.frame() %>%
+    rownames_to_column("USI") %>%
+    inner_join(., rownames_to_column(as.data.frame(GE),"USI"), 
+               by="USI")
+  
+
+    
+  #correlation of miRNA to mRNA in group 1, CBF-GLIS in this case. 
+  corr <- psych::corr.test(miRE,GE, method="spearman",
+                    adjust="BH",ci=FALSE)
+  
+  #Format the results 
+  coefs <- corr$r %>%
+    as.data.frame() %>%
+    rownames_to_column("MIMAT") %>%
+    gather(Gene,SpearmanRho, -MIMAT) 
+  
+  pvals <- corr$p %>%
+    as.data.frame() %>%
+    rownames_to_column("MIMAT") %>%
+    gather(Gene,Adj.P.val, -MIMAT)
+ 
+  res <- merge(coefs,pvals, by=c("MIMAT","Gene")) %>%
+    separate(MIMAT,into = c("Mir","MIMAT"), sep="\\.")
+  
+  list <- list(expn.g1, res)
+  names(list) <- c("Merged_Expression", "Results")
+  
+  return(list)
+}
+```
+
+
+USE THIS TUTORIAL:
+https://ourcodingclub.github.io/tutorials/dataviz-beautification-synthesis/#distributions
+
+# Read in the clinical data
+
+```{r}
+sample_manifest <- read.csv(file.path(TARGET, "SequencingDataMatrix/TARGET_AML_Ribodepleted_Manifest_08.12.21.csv")) 
+```
+
+#Read in the mapping-file
+
+```{r}
+ID.map <- read.csv(file.path(GENREFS, "miRBase_v21/hsa_gff3_IDMap.csv"))
+
+dim(ID.map)
+```
+
+```{r}
+head(ID.map)
+length(unique(ID.map$miR)) #4469, uhm wait. miRbase 21 has over 4,469 miRNAs. Why do we only have counts for 2,585??
+```
+
+
+# Read in the Interactions
+
+```{r}
+MTI <- readr::read_csv("miRNA-mRNA_Targets/hsa_MTI.csv")
+
+# head(MTI)
+dim(MTI) #502,652      9
+```
+
+```{r}
+miRDB.5p <- openxlsx::read.xlsx("mirDB_miR10a_gene_targets_2020.xlsx")
+miRDB.3p <- read.csv("mirDB_miR10a-3p_gene_targets_2020.csv")
+
+
+head(miRDB.5p)
+dim(miRDB.5p) #352   6
+dim(miRDB.3p) #188 6
+```
+
+```{r}
+targetScan.5p <- read.delim("References/TargetScan7.1__miR-10-5p.predicted_targets.txt", sep="\t") %>% 
+  filter(!Conserved.sites.total == Poorly.conserved.sites.total)
+
+targetScan.3p <- read.delim("References/TargetScan7.1__miR-10a-3p.predicted_targets.txt", sep="\t") %>% 
+  filter(Cumulative.weighted.context...score < -0.090) #the 75th percentile highest -5p score. More negative==more predicted repression of gene target
+# 
+
+# head(targetScan.5p)
+dim(targetScan.5p) #270  18
+dim(targetScan.3p) #646  13
+
+
+# head(targetScan.3p)
+
+# quantile(targetScan.5p$Cumulative.weighted.context...score)
+# quantile(targetScan.3p$Cumulative.weighted.context...score)
+```
+
+```{r}
+miRNA.gs <- read.gmt(file.path(PROJHOME,"0000.00.01_GSEA_geneSets_gmt/c3.mir.mirdb.v7.2.symbols.gmt"))
+
+miRNA.gs[["miRDB_miR10A_5p"]] <- miRDB.5p$Gene.Symbol
+miRNA.gs[["miRDB_miR10A_3p"]] <- miRDB.3p$Gene.Symbol
+
+miRNA.gs[["targetScan_miR10A_5p"]] <- targetScan.5p$Ortholog.of.target.gene
+miRNA.gs[["targetScan_miR10A_3p"]] <- targetScan.3p$Ortholog.of.target.gene
+
+miRNA.gs[["mirTarBase_miR10A_5p"]] <- filter(MTI, grepl("miR-10a-5p",miRNA)) %>%  pull(`Target Gene`)
+miRNA.gs[["mirTarBase_miR10A_3p"]] <- filter(MTI, grepl("miR-10a-3p",miRNA)) %>% pull(`Target Gene`)
+  
+length(miRNA.gs)
+
+# miRNA.gs[grep("MIR10[AB]",names(miRNA.gs),ignore.case = T, value=T)]
+```
+
+
+```{r}
+MTI.mir10a <- MTI %>% 
+  filter(grepl("miR-10a",miRNA)) %>% 
+  add_row(miRNA="hsa-miR-10a-5p", 
+          `Target Gene`=miRNA.gs[["MIR10A_5P_MIR10B_5P"]]) %>% 
+  add_row(miRNA="hsa-miR-10a-3p", 
+          `Target Gene`=miRNA.gs[["MIR10A_3P"]]) %>% 
+  
+  add_row(miRNA="hsa-miR-10a-3p", 
+          `Target Gene`=miRDB.3p$Gene.Symbol) %>% 
+  add_row(miRNA="hsa-miR-10a-5p", 
+          `Target Gene`=miRDB.5p$Gene.Symbol) %>% 
+  
+  add_row(miRNA="hsa-miR-10a-3p", 
+          `Target Gene`=targetScan.3p$Ortholog.of.target.gene) %>% 
+  add_row(miRNA="hsa-miR-10a-5p", 
+          `Target Gene`=targetScan.5p$Ortholog.of.target.gene) 
+
+head(MTI.mir10a)
+# tail(MTI.mir10a)
+dim(MTI.mir10a) #2217    9
+```
+
+
+# Read in the DEGs 
+
+```{r}
+files <- dir(file.path(PROJHOME,"2020.03.26_NUP98.Rearranged_Collab/DEGs"),
+                       pattern="NSD1_vs_Other.+csv|KDM5A_vs_Other.+csv|\\.X_vs_Other.+csv",
+             full.names = T)
+all_DEGs_files <- lapply(files, function(x) read.csv(x)) %>% 
+  set_names(c("NUP98.KDM5A", "NUP98.NSD1", "NUP98.X"))
+
+all_DEGs_dn <- lapply(all_DEGs_files, function(x) filter(x, logFC < 0) %>%  pull(gene)) %>% 
+  set_names(c("NUP98-KDM5A DEGs", "NUP98-NSD1 DEGs", "NUP98-X DEGs")) %>% 
+  unlist() %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  rename_all(~c("Contrast","Gene")) %>% 
+  group_by(Gene) %>% 
+  mutate(Contrast=paste(gsub(" DEGs[0-9]+","",Contrast),collapse = "; "), 
+         N_hits=n()) %>% 
+  ungroup() %>% 
+  arrange(desc(N_hits),Gene) %>% 
+  filter(!duplicated(Gene))
+
+
+# lapply(all_DEGs_files,dim)
+
+head(all_DEGs_dn)
+dim(all_DEGs_dn) #2652    3
+# View(all_DEGs)
+```
+
+
+
+# Read in the Counts
+
+```{r}
+cts <- readRDS(file.path(PROJHOME, "0000.00.03_ExpressionMatrices/BCCA_GRCh37_Ensembl_v69/00_Archive/TARGET_AML_MPN_DS_NBM_2646Samples_Ribodepleted_RNAseq_geneLevel_dupGenesRemoved_FractionalCounts.RDS"))
+
+# cts <- readRDS(file.path("/fh/fast/meshinchi_s/workingDir/TARGET/AML_TARGET/RNA/mRNAseq/analysis/2019.12.31_UMAP_Clustering/Expression_Data/TARGET_AML_DSAML_MPN_NBM_Ribodepleted_dupGenesRemoved_Fractionalcounts.RDS"))
+
+cts <- as.data.frame(cts)
+rownames(cts) <- cts$Gene
+cts <- cts[,-1]
+
+
+head(cts[,1:10])
+dim(cts) #51573  2645
+```
+
+```{r}
+mir.cts.1031 <- read.csv(file.path(TARGET,"RNA/miRNAseq/level3/mature_miRNA/2017July_BCCA_1031_miRBase21_Illumina_data/TARGET_AML_AAML1031_expn_matrix_mimat_miRNA_rawCounts_01.07.2019.csv")) %>% 
+  filter(!grepl("NOVEL",mir))
+
+# mir.cts.1031 <- read.csv(file.path(TARGET,"RNA/miRNAseq/level3/mature_miRNA/2017July_BCCA_1031_miRBase20_Illumina_data/TARGET_AML_AAML1031_expn_matrix_mimat_miRNA_rawCounts.csv"))
+
+mir.cts.1031 <- as.data.frame(mir.cts.1031)
+rownames(mir.cts.1031) <- mir.cts.1031$mir
+mir.cts.1031 <- mir.cts.1031[,-1]
+
+# dim(mir.cts.1031) #2585 1136
+head(mir.cts.1031[,1:5]) 
+```
+
+
+
+# Define Samples
+
+```{r}
+sample_info <- read.csv("../TARGET_AML_RNAseq_Cohort_for_Manuscript.csv")
+
+table(sample_info$Time_point)
+```
+
+```{r}
+cc_nup <- c("NUP98-NSD1" = "steelblue1",
+            "NUP98-KDM5A" = "magenta",
+            "NUP98-X" = "green1",
+            "OtherAML" = "grey80",
+            "NBM" = "gray40")
+```
+
+```{r}
+samps_all <- sample_info %>% 
+
+  mutate(Barcode=gsub("-", ".", PATIENT_ID_Original)) %>% 
+  mutate(Age.Category=factor(Age.Category, levels=c("Less than 3 years",
+                                                    "Between 3 and 10 years",
+                                                    "Greater than 10 years",
+                                                    "Unknown",
+                                                    "NBM"))) %>% 
+  mutate_at(vars(NUP98.Rearranged.Groups), ~factor(., levels=names(cc_nup))) 
+
+
+samps_withMiRNA <- samps_all %>% 
+   filter(Barcode %in% colnames(mir.cts.1031))
+
+dim(samps_all) #1550   74
+dim(samps_withMiRNA) #1112  74
+```
+
+```{r eval=FALSE}
+missing <- samps_all[!(samps_all$Barcode %in% colnames(mir.cts.1031)),]
+table(missing$NUP98.Rearranged.Groups)
+# View(missing)
+
+regex <- pull(missing,USI) %>%  paste0(., collapse = "|")
+table(grepl(regex, colnames(mir.cts.1031)))
+# regex
+```
+
+# Normalize counts
+
+```{r}
+library(edgeR)
+```
+
+```{r}
+cts_selected  <- cts[,samps_withMiRNA$Sample]
+keep <- rowSums(cpm(cts_selected) >= 1) >= 0.025*ncol(cts_selected)
+cts.filtered <- cts_selected[keep, ]
+
+dge <- DGEList(counts=cts.filtered)
+dge <- calcNormFactors(dge,method = "TMMwsp")
+
+logCPM <- edgeR::cpm(dge,log=TRUE,normalized.lib.sizes=TRUE, prior.count=1)
+
+dim(logCPM) #21273  1114
+head(logCPM[,1:5])
+```
+
+```{r}
+mir.cts_selected <- mir.cts.1031[,samps_withMiRNA$Barcode]
+colnames(mir.cts_selected) <- samps_withMiRNA$Sample
+
+
+mir.keep <- rowSums(cpm(mir.cts_selected) >= 1) >= 0.025*ncol(mir.cts_selected)
+mir.cts.filtered <- mir.cts_selected[mir.keep, ]
+
+mir.dge <- DGEList(counts=mir.cts.filtered)
+mir.dge <- calcNormFactors(mir.dge,method = "TMMwsp")
+
+miR.logCPM <- edgeR::cpm(mir.dge,log=TRUE,normalized.lib.sizes=TRUE, prior.count=1)
+
+dim(miR.logCPM) #1040 1114
+head(miR.logCPM[,1:5])
+```
+
+```{r}
+mir.RPM.1031 <- read.csv(file.path(TARGET,"RNA/miRNAseq/level3/mature_miRNA/2017July_BCCA_1031_miRBase21_Illumina_data/TARGET_AML_AAML1031_expn_matrix_mimat_norm_miRNA_RPM_01.07.2019.csv")) %>% 
+  filter(!grepl("NOVEL",mir))
+
+
+mir.RPM.1031 <- as.data.frame(mir.RPM.1031)[,c("mir",samps_withMiRNA$Barcode)]
+rownames(mir.RPM.1031) <- mir.RPM.1031$mir
+colnames(mir.RPM.1031) <- c("mir",samps_withMiRNA$Sample)
+
+
+head(mir.RPM.1031[,1:5]) 
+```
+
+
+
+# Examine the Distribusions
+
+```{r fig.height=4 fig.wid=4}
+# range(log2.RPM) # 0.00000 19.20284
+# hist(t(log2.RPM))
+range(logCPM) # -5.761978 21.408281
+# hist(t(CPM))
+```
+
+```{r}
+# range(log2.TPM) #0.00000 19.51991
+range(miR.logCPM) #-1.336107 20.388648
+# hist(t(CPM.mir))
+```
+
+# Expression of miR-10a
+
+```{r}
+mir10a <- miR.logCPM[grep("hsa-mir-10[ab]", row.names(miR.logCPM)), samps_withMiRNA$Sample] %>% 
+  as.data.frame() %>% 
+  rownames_to_column("miR") %>% 
+  gather(Sample, log2CPM, -miR)  %>% 
+  left_join(., samps_withMiRNA, by="Sample")
+
+mir10a
+```
+
+```{r fig.width=15}
+ggplot(mir10a, aes(x=NUP98.Rearranged.Groups.Addl, y=log2CPM, fill=NUP98.Rearranged.Groups.Addl)) +
+  geom_boxplot() +
+  facet_wrap(~miR) +
+  theme_classic()
+```
+
+```{r}
+mir10a_RPM <- mir.RPM.1031 %>% 
+  filter(grepl("hsa-mir-10a", mir)) %>% 
+  pivot_longer(cols=matches("TARGET"), names_to="Sample", values_to="RPM") %>% 
+  mutate(log2_RPM=log2(RPM+1), 
+         MIMAT=str_split_fixed(mir, pattern="\\.", n=2)[,2]) %>% 
+  left_join(., ID.map, by=c("MIMAT"="MIMAT.ID")) %>% 
+  left_join(., samps_withMiRNA, by="Sample") %>% 
+  mutate(groups=paste(miR,NUP98.Rearranged.Groups, sep="_")) %>% 
+  select(Sample, mir:miR, groups,NUP98.Rearranged.Groups)
+
+
+# head(mir10a_RPM)
+# dim(mir10a_RPM)
+
+# table(mir10a_RPM$groups)
+```
+
+
+```{r}
+cc_nup <- c("NUP98-NSD1" = "steelblue1",
+            "NUP98-KDM5A" = "magenta",
+                 "NUP98-X" = "green1",
+                 "OtherAML" = "grey80",
+                 "NBM" = "gray40")
+
+cc_nup_mir <- mir10a_RPM %>% 
+  mutate(colors=case_when(grepl("NSD1", groups) ~ "steelblue1", 
+            grepl("KDM5A", groups) ~ "magenta",
+            grepl("-X", groups) ~ "green1", 
+            grepl("AML", groups) ~ "grey80", 
+            grepl("NBM", groups) ~ "grey40")) %>% 
+ select(groups, colors) %>% 
+  distinct() %>% 
+  pull(colors, name=groups)
+
+cc_nup_mir <- c(cc_nup_mir, "hsa-miR-10a-3p"="blue2", "hsa-miR-10a-5p"="firebrick2")
+
+cc_nup_shape <- sapply(names(cc_nup_mir), function(x) ifelse(grepl("-5p", x), "|", "O"))
+# cc_nup_shape
+```
+
+
+```{r fig.width=10, fig.height=5}
+density <- ggplot(data = mir10a_RPM,
+           aes(x = log2_RPM, y = NUP98.Rearranged.Groups)) +
+  # geom_point(data=filter(mir10a_RPM, NUP98.Rearranged.Groups == "OtherAML"),
+  #            mapping = aes(x=log2_RPM, y=NUP98.Rearranged.Groups, color=groups, shape=groups),
+  #            position = position_nudge(y=-0.2),
+  #            # pch="|", 
+  #            size=4, stroke=0.1 ) +
+  geom_point(mapping=aes(color=groups, shape=groups),
+               position = position_nudge(y=-0.2),
+               size=3) +
+  geom_boxplot(aes(fill = groups), 
+               width=0.25, 
+               lwd=0.5,
+               position=position_nudge(x = 0, y = -0.2),
+               outlier.shape = NA, alpha=0.2)  +
+  ggridges::geom_density_ridges(aes(fill = groups), alpha=0.5, scale=0.65, lwd=0.5) +
+  geom_rug(aes(color=miR), sides="b", size=0.1, length = unit(4,"mm"))  +
+  guides(color=FALSE, fill=FALSE,shape=FALSE) +
+  scale_x_continuous(expand = c(0,0)) +
+  scale_y_discrete(expand = c(0.25,0)) +
+  scale_shape_manual(values=c(cc_nup_shape)) +
+  scale_fill_manual(values=cc_nup_mir) +
+  scale_color_manual(values=gsub("green1","green4",cc_nup_mir)) +
+  labs(y="", x="Expression (log2 RPM)") +
+  # annotate(geom="text", y=0.25, x=0, label="THIS") +
+  theme_classic() +
+  theme(axis.text = element_text(size=14, color="black"))
+
+
+# pdf("Figures/TARGET_AML_NUP98-Rearranged_mir10a_density_barcode_plots.pdf", height = 5, width=10)
+density
+# dev.off()
+```
+
+```{r}
+# options(scipen = 999)
+# mir10a_RPM %>% 
+#   group_by(NUP98.Rearranged.Groups, groups) %>% 
+#   summarise(min=min(log2_RPM), max=max(log2_RPM)) %>% 
+#   arrange(NUP98.Rearranged.Groups) %>% 
+#   mutate_at(vars(min, max), ~round(., digits = 2))
+```
+
+```{r fig.width=15}
+mir10a_RPM_violin <-  
+    ggplot(data = mir10a_RPM,
+           aes(y = log2_RPM, x = groups, fill = groups)) +
+    geom_flat_violin(position = position_nudge(x = 0.2, y = 0), alpha = 0.8) +
+    geom_point(aes(color = groups),
+               position = position_jitter(width = 0.15), size = 1, alpha = 1.0) +
+    geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.5) +
+    labs(x = "NUP98-Rearrangement", y = "Expression (log2 RPM)") +
+    coord_flip() +
+    # guides(fill = FALSE, color = FALSE) +
+    # scale_fill_manual(values = cc_nup) +
+    # scale_colour_manual(values =cc_nup) +
+    theme_classic()
+
+
+# mir10a_RPM_violin
+```
+
+
+# Correlation of the Genes to miR-10a
+
+```{r}
+miR.10.Targets <- MTI.mir10a %>% 
+  filter(`Target Gene` %in% rownames(logCPM)) %>% 
+  select(`Target Gene`) %>% 
+  distinct()
+
+dim(miR.10.Targets) #1390   1 gene targets in expression data 
+
+
+# miR.10.Targets
+# table(miR.10.Targets$N_hits) #All singletons.. 
+# table(miR.10.Targets$Contrast) #but from different contrasts...
+```
+
+```{r}
+NUP98.samps <- samps_withMiRNA %>% 
+  filter(grepl("NUP98", NUP98.Rearranged.Groups))
+
+table(NUP98.samps$NUP98.Rearranged.Groups)
+
+NBM.samps <- samps_withMiRNA %>% 
+  filter(grepl("NBM", NUP98.Rearranged.Groups))
+
+table(NBM.samps$NUP98.Rearranged.Groups)
+
+other.samps <- samps_withMiRNA %>% 
+  filter(grepl("OtherAML", NUP98.Rearranged.Groups))
+
+table(other.samps$NUP98.Rearranged.Groups)
+```
+
+```{r warning=FALSE}
+nup98.corrs.miR10a <- corr.miRNA.mRNA(miRNA.Expn = miR.logCPM[grep("mir-10a", rownames(miR.logCPM)), NUP98.samps$Sample],
+                         gene.Expn = logCPM[miR.10.Targets$`Target Gene`, NUP98.samps$Sample])
+
+dim(nup98.corrs.miR10a$Results) 
+```
+
+```{r}
+nup98.corrs.miR10a$Results <- nup98.corrs.miR10a$Results %>%
+  arrange(SpearmanRho, Adj.P.val) 
+
+nup98.corrs.miR10a$Merged_Expression <- nup98.corrs.miR10a$Merged_Expression %>%
+  left_join(.,NUP98.samps, by=c("USI"="Sample"))
+
+
+head(nup98.corrs.miR10a$Results[,1:5])
+dim(nup98.corrs.miR10a$Results) #1182   13
+
+range(nup98.corrs.miR10a$Results$SpearmanRho) # -0.6421053  0.5779904,
+View(nup98.corrs.miR10a$Results)
+
+# write.csv(nup98.corrs.miR10a$Results,"NUP98-R_AML_miR10a_Interacting_miRNA_AllCorrs.csv", row.names = FALSE)
+```
+
+
+Conclusion:
+
+miR10a has slight negative correlation with TIAM1 in the NUP98-R AML
+no other genes were really informative. 
+https://pubmed.ncbi.nlm.nih.gov/9713998/ - TIAM1 is more highly expressed in DS-AML at diagnosis/relapse 
+
+Looks like TIAM1 is highly expressed in NBM as well compared to AMLs in general. 
+it may not be a strong association in the NUP98-KDM5A or NUP98-X which has much higher expn of TIAM1. So it could be an M7 characteristic to highly express TIAM1? or its only really in NUP98. 
+
+```{r fig.height=5, fig.width=7}
+ggplot(nup98.corrs.miR10a$Merged_Expression, aes(y=`hsa-mir-10a.MIMAT0000253`, x=TIAM1, color=NUP98.Rearranged.Groups)) +
+  geom_point() +
+  stat_smooth(data=nup98.corrs.miR10a$Merged_Expression, mapping=aes(y=`hsa-mir-10a.MIMAT0000253`, x=TIAM1), 
+              method="lm", inherit.aes = F)  +
+  facet_grid(~NUP98.Rearranged.Groups) +
+  # scale_x_continuous(limits = c(0,2)) +
+  theme_classic()
+
+```
+
+```{r}
+aml.corrs.miR10a <- corr.miRNA.mRNA(miRNA.Expn = miR.logCPM[grep("mir-10a", rownames(miR.logCPM)), other.samps$Sample],
+                         gene.Expn = logCPM[all_DEGs$Gene, other.samps$Sample])
+
+aml.corrs.miR10a$Results %>%
+  arrange(Adj.P.val) %>%
+  head()
+
+range(aml.corrs.miR10a$Results$SpearmanRho) # -0.4555025  0.7417628,
+# write.csv(aml.corrs.miR10a$Results,"Heterogenous_Other_AML_Gene_miRNA_AllCorrs.csv", row.names = FALSE)
+```
+
+```{r}
+NBM.corrs.miR10a <- corr.miRNA.mRNA(miRNA.Expn = miR.logCPM[grep("mir-10a", rownames(miR.logCPM)), NBM.samps$Sample],
+                         gene.Expn = logCPM[all_DEGs$Gene, NBM.samps$Sample])
+
+NBM.corrs.miR10a$Results %>%
+  arrange(Adj.P.val) %>%
+  head()
+
+# range(NBM.corrs.miR10a$Results$SpearmanRho) #-0.5075420  0.6194002,
+# write.csv(NBM.corrs.miR10a$Results,"NBM_Gene_miRNA_AllCorrs.csv", row.names = FALSE)
+```
+
+
+# GSEA with mirRDB Targets 
+
+```{r}
+library(edgeR)
+library(GSVA)
+library(ggpubr)
+```
+
+```{r}
+cts_all  <- cts[,samps_all$Sample]
+keep_all <- rowSums(cpm(cts_all) >= 1) >= 0.025*ncol(cts_all)
+cts.filtered_all <- cts_all[keep_all, ]
+
+dge_all <- DGEList(counts=cts.filtered_all)
+dge_all <- calcNormFactors(dge_all,method = "TMMwsp")
+
+logCPM_all <- edgeR::cpm(dge_all,log=TRUE,normalized.lib.sizes=TRUE, prior.count=1)
+
+dim(logCPM_all) #21141  1557
+head(logCPM_all[,1:5])
+```
+
+```{r}
+gsva.res.mir10a <- gsva(expr = logCPM_all,
+                 gset.idx.list = miRNA.gs[grep("MIR10[AB]",
+                                               names(miRNA.gs), ignore.case = T, value=T)], 
+                 # annotation=,
+                 method="ssgsea",
+                 kcdf="Gaussian",
+                 parallel.sz=2, 
+                 mx.diff=TRUE,
+                 abs.ranking=FALSE, 
+                 tau=1,
+                 min.sz=15,
+                 max.sz=1e6,
+                 verbose=TRUE)
+```
+
+```{r}
+head(gsva.res.mir10a[,1:5])
+dim(gsva.res.mir10a) 
+
+ # write.csv(gsva.res.mir10a, "TARGET_AML_NUP98-R_miR10a_Targets_ssGSEA_Scores.csv", row.names = F)
+```
+
+```{r}
+gsva.res.mir10a.df <- gsva.res.mir10a %>% 
+  as.data.frame() %>% 
+  rownames_to_column("path") %>% 
+  gather(Sample, Score,-path) %>% 
+  inner_join(., samps_all, by="Sample") %>% 
+  mutate(NUP98.Rearranged.Groups.Addl=case_when(
+          grepl("NUP98", NUP98.Rearranged.Groups) ~ NUP98.Rearranged.Groups,
+          grepl("DEK|KMT2A", AML_Subtype) ~ AML_Subtype, 
+          grepl("Yes", NPM.mutation.) ~ "NPM1",
+          TRUE ~ NUP98.Rearranged.Groups)) 
+
+
+head(gsva.res.mir10a.df)
+table(gsva.res.mir10a.df$NUP98.Rearranged.Groups)
+# write.csv(gsva.res.mir10a.df, "TARGET_AML_NUP98-R_ssGSEA_miR10a_Targets.csv", row.names = F)
+```
+
+```{r}
+# my_comparisons <- list( c("NUP98-KDM5A", "NBM"),
+#                         c("NUP98-NSD1", "NBM"),
+#                          c("NUP98-X", "NBM"))
+
+my_comparisons <- list( c("NUP98-KDM5A", "OtherAML"),
+                        c("NUP98-NSD1", "OtherAML"),
+                         c("NUP98-X", "OtherAML"))
+
+cc_nup_addl <- c("NUP98-KDM5A" = "magenta",
+                 "NUP98-NSD1" = "steelblue1",
+                 "NUP98-X" = "green1",
+                 "DEK-NUP214"="forestgreen",
+                  "KMT2A"="khaki2",
+                 "NPM1"="pink4",
+                 "OtherAML" = "grey80",
+                 "NBM" = "gray40")
+```
+
+
+```{r fig.height=8,fig.width=10}
+mir10A.ssGSEA.violin <- ggplot(gsva.res.mir10a.df, aes(x=NUP98.Rearranged.Groups, y=Score,
+                               fill=NUP98.Rearranged.Groups)) +
+  geom_jitter(alpha=1.0,size=2, aes(color=NUP98.Rearranged.Groups)) +
+  geom_violin(draw_quantiles = 0.5, alpha=0.6) +
+  facet_wrap(~path, scales = "free") +
+  stat_compare_means(comparisons = my_comparisons, label="p.signif") +
+  scale_fill_manual(values=cc_nup_addl) +
+  scale_color_manual(values=cc_nup_addl) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle=35, vjust=1, hjust=1))
+
+mir10A.ssGSEA.violin
+# ggsave(filename = "NUP98-R_miR10a_Targets_ssGSEA_violin.pdf",plot=mir10A.ssGSEA.violin, device = "pdf", height = 12, width = 20)
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,1811 @@
+---
+title: "Subset BAMs and Visualize the Fusion Breakpoints"
+author: "Jenny Smith"
+date: "10/16/2020"
+output: html_document
+---
+
+
+#Set-up
+
+```{r setup}
+library(knitr)
+knitr::opts_knit$set(root.dir = file.path(PROJHOME,"2020.03.26_NUP98.Rearranged_Collab/NUP98_Fusions"))
+```
+
+```{r}
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE, 
+                      fig.align='center', fig.width = 10, fig.height = 10)
+
+
+options(stringsAsFactors = FALSE,bitmapType = 'cairo', device='x11', useNA = "always", na.rm = T)
+grDevices::X11.options(type='cairo')
+table = function (..., useNA = 'ifany') base::table(..., useNA = useNA)
+```
+
+```{r message = FALSE, warning=FALSE}
+library(stringr)
+library(magrittr)
+
+library(ggplot2)
+library(gridExtra)
+library(ggrepel)
+library(RColorBrewer)
+
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(readr)
+
+library(DeGSEA)
+library(fusBreakpoint)
+getwd()
+```
+
+
+#ClinData
+
+```{r}
+merged <- read.csv(file.path(CDE,"Merged/00_Old/TARGET_AML_0531_1031_merged_CDEs_03.17.21.csv"), 
+                   na.strings = c("NA","#N/A", "N/A", "", "."))
+
+merged <- merged %>% 
+  dplyr::filter(!is.na(USI), USI != "Unknown") %>% 
+  dplyr::filter(Eligibility_Comments != "remove") %>% 
+  # mutate_at(vars(matches("OS.time|EFS.time|FLT3.ITD.allelic.ratio|blast."))) %>% 
+  set_rownames(.$USI)
+
+dim(merged)
+```
+
+```{r}
+# dir(file.path(TARGET, "SequencingDataMatrix/"))
+manifest <- read.csv(file.path(TARGET, "SequencingDataMatrix/00_archive/TARGET_AML_Ribodepleted_Manifest_02.04.21.csv")) 
+
+dim(manifest)
+head(manifest)
+```
+
+
+#Fusion Data 
+
+```{r message=FALSE, warning=FALSE}
+# fusions <- read_csv(file.path(PROJHOME,"2018.09.11_Combine_Fusion_Calls/Combined_withConfidence_Levels/TARGET_AML_0531_1031_Relapse_Combined_STAR_TransAbyss_CICERO_FusionCalls_withConfidenceLevels_Annotated_6.17.2020.csv"))
+
+fusions <- readr::read_csv(file.path(PROJHOME,"2018.09.11_Combine_Fusion_Calls/Combined_withConfidence_Levels/TARGET_AML_0531_1031_Relapse_Discovery_Combined_STAR_TransAbyss_CICERO_FusionCalls_withConfidenceLevels_Annotated_01.25.21.csv"))
+
+
+dim(fusions) #182596    169
+# fusions$All_Fusions_Called
+```
+
+```{r}
+filter(fusions, USI=="PAVMRH") %>% 
+  arrange(desc(ConfidenceLevel__byFusionsOfInterest))
+```
+
+```{r eval=FALSE}
+CICERO.raw <- read.delim(file.path(PROJHOME, "2020.04.13_CICERO_St.Jude/CICERO_raw/Raw_CICERO_Output_Result_20200324.txt"),
+                          sep="\t") %>% 
+  rename_at(vars(OrientA,OrientB), ~c("ortA","ortB"))
+
+
+# head(CICERO.raw)
+```
+
+
+#Reference Genome 
+
+```{r}
+# suppressPackageStartupMessages(library(Biostrings))
+# suppressPackageStartupMessages(library(GenomicFeatures))
+# library(BSgenome)
+```
+
+Will have to likely forge my own genome... but for godsake why is it sooo confusing. dont like a single vignette written by herve. confusing all of them. 
+
+https://www.biostars.org/p/159243/
+https://bioconductor.org/packages/release/bioc/vignettes/BSgenome/inst/doc/BSgenomeForge.pdf
+https://bioconductor.org/packages/release/bioc/vignettes/BSgenome/inst/doc/GenomeSearching.pdf
+
+http://web.mit.edu/~r/current/arch/i386_linux26/lib/R/library/GenomicRanges/doc/GenomicRangesHOWTOs.Rnw
+
+*one based or zero based* 
+https://www.biostars.org/p/84686/
+
+Why does all this matter?
+
+Moving from UCSC browser/tools to Ensembl browser/tools or back
+- Ensembl uses 1-based coordinate system
+- UCSC uses 0-based coordinate system
+- file formats are 1-based (GFF, SAM, VCF) 
+- file formats  are 0-based (BED, BAM)
+- See this excellent post and its many good links for more info:
+What are the advantages/disadvantages of one-based vs. zero-based genome coordinate systems
+
+```{r}
+IDmap <- read.csv(file.path(PROJHOME,"0000.00.02_Reference_GeneInfo/GeneSymbol_Ensembl_ID_Conversion_GRCh37.69_FromBCCA.csv"))
+
+head(IDmap)
+```
+
+```{r message=FALSE}
+Grch37.txdb <- AnnotationDbi::loadDb(file.path(PROJHOME, "0000.00.02_Reference_GeneInfo/GRCh37-lite_Ensembl_v69_TxDB.sqlite"))
+Grch37.txdb
+```
+
+```{r}
+Grch37.lite <- file.path(GENREFS,"GRCh37/fasta/genome/Grch37-lite/GRCh37-lite.fa")
+chrom_len_file <- file.path(PROJHOME, "0000.00.02_Reference_GeneInfo/Grch37.lite_chrom_lengths.txt")
+
+seqlens <- read.delim(chrom_len_file) %>% 
+  rownames_to_column("chr") %>%
+  pull(x, name=chr)
+
+
+# seqlens <- BSgenome::fasta.seqlengths(Grch37.lite)
+# write.table(seqlens,"Grch37.lite_chrom_lengths.txt",sep="\t",quote = F)
+# head(seqlens)
+```
+
+```{r eval=FALSE}
+#Im missing the GRCh37 patches that are in the GTF so it wont include this in the making of TXdb. 
+chrominfo <- read.delim(chrom_len_file) %>%
+  rownames_to_column("chrom_full_name") %>%
+  separate(chrom_full_name, into = "chrom", sep="\\s",
+           remove=T,extra = "drop") %>%
+  dplyr::select(chrom,length=x) 
+
+
+gtf <- file.path(GENREFS,"GRCh37/gtf/Homo_sapiens.GRCh37.69.gtf")
+Grch37.txdb <- GenomicFeatures::makeTxDbFromGFF(gtf,
+                      format=c("auto", "gff3", "gtf"),
+                      dataSource="Ensembl_FTP",
+                      organism="Homo sapiens",
+                      taxonomyId=NA,
+                      circ_seqs=NULL,
+                      chrominfo=NULL,
+                      miRBaseBuild=NA,
+                      metadata=NULL)
+
+
+# columns(Grch37.txdb)
+# select(Grch37.txdb, keys=nup.genes$gene_id, columns = c("TXNAME"),
+#        keytype = "GENEID") 
+
+
+# AnnotationDbi::saveDb(Grch37.txdb,"GRCh37-lite_Ensembl_v69_TxDB.sqlite")
+```
+
+https://github.com/FredHutch/easybuild-life-sciences/issues/419
+
+```{r eval=FALSE}
+# AnnotationDbi::select(x=Grch37.txdb,
+#        keys="ENSG00000061656",#keys(Grch37.txdb,"GENEID"),
+#        columns=columns(Grch37.txdb),
+gtf_file <- file.path(GENREFS,"GRCh37/gtf/Homo_sapiens.GRCh37.69.NoHeader.gtf")
+GTF <- read.delim(gtf_file, header = FALSE)
+head(GTF)
+dim(GTF)
+# table(GTF$V2)
+
+IDmap <- GTF %>%
+    filter(grepl("exon", V3)) %>% 
+    separate(V9, into = paste0("C",1:40), sep="; ", remove = F) %>% 
+    select_if(~!all(is.na(.)))  %>% 
+    mutate_at(vars(matches("^C[0-9]")), ~gsub("^\\s|;$","", .))
+
+cols <- dplyr::select(IDmap, matches("^C[0-9]")) %>% 
+  mutate_all(~str_split_fixed(.,pattern=" ", n=2)[,1]) %>% 
+  distinct() %>% 
+  as.character()
+
+values <- dplyr::select(IDmap, matches("^C[0-9]")) %>% 
+  mutate_all(~str_split_fixed(.,pattern=" ", n=2)[,2])
+
+IDmap <- dplyr::select(IDmap, -matches("^C[0-9]")) %>% 
+  bind_cols(., values) %>% 
+  rename_at(vars(matches("^C[0-9]")), ~cols) %>% 
+  dplyr::select(all_of(cols), -matches("exon")) %>% 
+  distinct()
+
+
+head(IDmap)
+dim(IDmap) #205279      5
+# write.csv(IDmap,
+#           file.path(PROJHOME, "0000.00.02_Reference_GeneInfo/GRCh37_Ensembl_v69_TranscriptLevel_IDmap.csv"),
+#           row.names = F)
+
+# table(IDmap$gene_biotype)
+```
+
+
+
+#Define BAM Files 
+
+```{r}
+polyA_RNAseq_files <- read.csv(file.path(TARGET, "SequencingDataMatrix/BAM_manifests/00_Archive/TARGET_AML_polyA_RNAseq_Bam_Manifest_10.02.20.csv"))
+
+
+dim(polyA_RNAseq_files)
+table(duplicated(polyA_RNAseq_files$Sample)) #FALSE
+```
+
+```{r}
+RBD_RNAseq_files <- read.csv(file.path(TARGET, "SequencingDataMatrix/BAM_manifests/00_Archive/TARGET_AML_Ribodepleted_RNAseq_Bam_Manifest_10.02.20.csv"),
+                             row.names = 1)
+
+dim(RBD_RNAseq_files)
+table(duplicated(RBD_RNAseq_files$Sample)) #FALSE
+```
+
+```{r}
+SRA_RNAseq_files <- read.csv(file.path(TARGET, "SequencingDataMatrix/Fastq_manifests/00_Archive/TARGET_AML_Discovery_RNAseq_AWS_S3_Fastq_Manifest_10.14.20.csv"))  %>% 
+  dplyr::filter(Time_point=="diagnostic")
+
+
+dim(SRA_RNAseq_files)
+table(duplicated(SRA_RNAseq_files$Sample)) #FALSE
+table(SRA_RNAseq_files$AML_Subtype)
+```
+
+
+
+# NUP98
+
+```{r}
+NUP98.full <- read.csv(file.path(PROJHOME,"2020.03.26_NUP98.Rearranged_Collab/TARGET_AML_NUP98.rearranged_Cleaned_Groups_REG_10.26.2020.csv")) %>% 
+  filter(Reg. %in% merged$Reg.)
+
+dim(NUP98.full)
+table(NUP98.full$NUP98.Rearranged.Groups)
+```
+
+```{r}
+NUP98.grps <- NUP98.full %>%
+  dplyr::filter(grepl("NUP98", NUP98.Rearranged)) #%>% 
+  # inner_join(., merged,by="USI")
+
+# head(NUP98.grps)
+# dim(NUP98.grps) #164   4
+table(NUP98.grps$NUP98.Rearranged.Groups)
+```
+
+```{r}
+nup.regex <- pull(NUP98.grps,NUP98.Rearranged) %>%
+  unique() %>%
+  str_split(., "-") %>%
+  #alphabetical order for Fusion Category
+  lapply(., function(x) paste(x[order(x)], collapse="-"))  %>%
+  unlist() %>% 
+  .[!grepl("OtherAML",.)] %>%
+  paste(., collapse="|")
+```
+
+```{r}
+nup98.fusions <- fusions %>%
+  dplyr::filter(Time_point=="diagnostic", Lib_Prep=="RBD") %>% 
+  dplyr::filter(grepl(nup.regex, Fusion.Category)) %>%
+  dplyr::filter(USI %in% NUP98.grps$USI) %>%
+  #these patients are classified as NUP98-HOXA9
+  dplyr::filter(!grepl("HOXA10.HOXA9", Fusion.Category),
+         !grepl("Only_Detected_by_TargAlign", breakpoint_comparison)) %>% #
+  separate(Fusion.Category, into = c("GeneA","GeneB"), remove = F, sep="-") %>% 
+  #reorder 
+  dplyr::select(Sample=Patient,
+         Fusion.Category, 
+         GeneA,
+         GeneB,
+         breakpoint_comparison,
+         breakpoint.TA,Breakpoints.STAR,Breakpoint.CICERO, 
+         everything()) %>% 
+  arrange(Sample)
+
+# nup98.fusions
+
+table(duplicated(nup98.fusions$Sample)) #FALSE for 162 samples
+table(duplicated(nup98.fusions$USI))  #156  unique samples, and 6 replicates
+# table(nup98.fusions$breakpoint_comparison) #only 2 samples have truly different breakpoints between the callers
+# table(nup98.fusions$Fusion.Category)
+# View(nup98.fusions)
+
+# write.csv(nup98.fusions, "TARGET_AML_NUP98_Raw_Fusion_Data_Subset.csv", row.names = FALSE)
+```
+
+
+
+```{r}
+nup98.fusions <- read.csv("TARGET_AML_NUP98_Raw_Fusion_Data_Subset.csv")
+
+#select the primary breakpoint, only 1 per patient
+NUP98.primary.breakpoints <- dplyr::select(nup98.fusions,
+                             Sample,
+                             Fusion.Category,
+                             breakpoint_comparison,
+                         breakpoint.TA,
+                         Breakpoints.STAR,
+                         Breakpoint.CICERO) %>% 
+  gather(Algorithm,Breakpoint, breakpoint.TA:Breakpoint.CICERO) %>%
+  dplyr::filter(!is.na(Breakpoint)) %>%
+  
+  #select one breakpoint per patient. Use the selection process below. 
+  group_by(Sample) %>%
+  mutate(keep=case_when(
+   n() == 1 ~ TRUE, #only TA, only STAR, and only CICERO calls. Just keep as is out of necessing
+   
+   #Highest confidence breakpoint positions. 
+   n() > 1 & all(breakpoint_comparison == "all_identical_breakpoints") & 
+     any(grepl("Breakpoints.STAR", Algorithm)) ~ ifelse(grepl("Breakpoints.STAR", Algorithm), TRUE, FALSE), 
+   n() > 1 & all(breakpoint_comparison == "all_identical_breakpoints") & 
+     any(grepl("Breakpoint.CICERO", Algorithm)) ~ ifelse(grepl("Breakpoint.CICERO", Algorithm), TRUE, FALSE),
+   n() > 1 & all(breakpoint_comparison == "all_identical_breakpoints") & 
+     any(grepl("breakpoint.TA", Algorithm)) ~ ifelse(grepl("breakpoint.TA", Algorithm), TRUE, FALSE),
+   
+   # Keep fusion breakpoint with at least 2 callers support  
+   n() > 1 &  all(grepl("TAxSTAR: identical|STARxCICERO: identical",breakpoint_comparison)) & 
+     any(grepl("Breakpoints.STAR", Algorithm)) ~ ifelse(grepl("Breakpoints.STAR", Algorithm), TRUE, FALSE),
+   n() > 1 & all(grepl("TAxCICERO: identical",breakpoint_comparison)) & 
+     any(grepl("Breakpoint.CICERO", Algorithm)) ~ ifelse(grepl("Breakpoint.CICERO", Algorithm), TRUE, FALSE),
+   
+   #Keep the one with at least +/- 5bp tolerance from STAR or CICERO since they are more modern.
+   n() > 1 & all(grepl("STARxCICERO: .+5bp_matched_breakpoints|TAxSTAR: .+5bp_matched_breakpoints",breakpoint_comparison)) & 
+     any(grepl("Breakpoints.STAR", Algorithm)) ~ ifelse(grepl("Breakpoints.STAR", Algorithm), TRUE, FALSE),
+   n() > 1 & all(grepl("TAxCICERO: .+5bp_matched_breakpoints",breakpoint_comparison)) & 
+     any(grepl("Breakpoint.CICERO", Algorithm)) ~ ifelse(grepl("Breakpoint.CICERO", Algorithm), TRUE, FALSE),
+   
+   #Each algorithm found the same breakpoints, but each one assigned different "strenght of read evidence" to each 
+   #so no shared "Primary Breakpoints"with the highest read evidence. 
+   n() > 1 & all(grepl("TAxSTAR: both_in_alternate_breakpoints|STARxCICERO: different_breakpoints",breakpoint_comparison)) & 
+     any(grepl("Breakpoints.STAR", Algorithm)) ~ ifelse(grepl("Breakpoints.STAR", Algorithm), TRUE, FALSE),
+   
+   # Conflicting evidence is difficult to decide - so just take STAR since its a more modern algorithm. 
+   n() > 1 & all(breakpoint_comparison == "TAxSTAR: different_breakpoints") & 
+     any(grepl("Breakpoints.STAR", Algorithm)) ~ ifelse(grepl("Breakpoints.STAR", Algorithm), TRUE, FALSE),
+   n() > 1 & all(breakpoint_comparison == "STARxCICERO: different_breakpoints") & 
+     any(grepl("Breakpoints.STAR", Algorithm)) ~ ifelse(grepl("Breakpoints.STAR", Algorithm), TRUE, FALSE)
+   )) %>% 
+  
+  
+  # ORIGINAL METHOD: select one breakpoint per patient - preferentially use TransAbyss 
+  # group_by(Sample) %>%
+  # mutate(keep=case_when(
+  #   n() == 1 ~ TRUE,
+  #   n() > 1 & any(grepl("breakpoint.TA", Algorithm)) ~ ifelse(grepl("breakpoint.TA", Algorithm), TRUE, FALSE),
+  #   n() > 1 & any(grepl("Breakpoints.STAR", Algorithm)) ~ ifelse(grepl("Breakpoints.STAR", Algorithm), TRUE, FALSE)
+  #   # n() > 1 & any(grepl("breakpoint.TA", Algorithm)) ~ ifelse(grepl("breakpoint.TA", Algorithm), TRUE, FALSE)
+  #   )) %>%
+  ungroup() %>%
+  dplyr::filter(keep) %>%
+
+  #Order breakpoints by Chr to avoid miscounting
+  #Will need to add a long and involved way to keep the original fusion name from the algorith (eg X.Fusion.STAR, Fusion.CICERO, etc.)
+  rowwise() %>%
+  mutate(Breakpoint_Order=order_breakpoints(Breakpoint)) %>%
+  ungroup() %>% 
+  arrange(Fusion.Category)
+
+head(NUP98.primary.breakpoints)
+table(NUP98.primary.breakpoints$Algorithm)
+#breakpoint.TA Breakpoints.STAR
+# 1              161
+```
+
+```{r}
+nup.genes <- dplyr::select(nup98.fusions,GeneA,GeneB) %>%
+  gather(GenePartner, GeneName, GeneA:GeneB) %>%
+  pull(GeneName) %>%
+  unique() %>%
+  data.frame(geneSymbol=.) %>%
+  inner_join(., IDmap, by="geneSymbol") %>%
+  set_rownames(.$gene_id)
+
+nup.genes
+# write.csv(nup.genes, "NUP98/TARGET_AML_NUP98_gene_pairs.csv")
+```
+
+```{r}
+#For the exon ranking, i need the transcript isoform with a refseq ID - since they are highly stable and have a protein coding product that is typically the 'canonical' isoform
+#I am updating this to use the same refSeq accessions as Xioatu Ma who shared the original refSeq IDs - though I did update some out of necessity. 
+
+transcriptIDmap <- read.csv("TARGET_AML_refSeq_ensembl_transcript_IDmap.csv") %>% 
+  filter(external_gene_name %in% nup.genes$geneSymbol)
+
+# refseq_canonical <- c("NM_182641", "NM_007067", "NM_022455", "NM_024297","NM_006902", "NM_003011","NM_016320")
+# 
+# 
+# transcriptIDmap <- read.csv("Ensembl_v101_Biomart_TranscriptID_withRefseq.txt") %>% 
+#   group_by(Gene.stable.ID) %>%
+#   mutate(Num_Txs=n()) %>% 
+#   dplyr::filter(RefSeq.mRNA.ID !="")%>%
+#   #for those with > 1 of refseq IDs, I looked at ensembl to choose, typically the longest isoform. dont know how to do this all the time.
+#   dplyr::filter( n() == 1 | RefSeq.mRNA.ID %in% refseq_canonical) %>%  
+#   ungroup() %>%
+#   arrange(Gene.name) %>%
+#   dplyr::select(Gene.stable.ID:Gene.name, Num_Txs)
+
+
+transcriptIDmap
+# View(transcriptIDmap)
+# dim(transcriptIDmap) #16  5
+```
+
+
+## Fusion Transcripts
+
+```{r eval=FALSE}
+#Save subsetted BAMs 
+pts <- unique(nup98.fusions$Sample)
+outdir <- file.path(SCRATCH,"jlsmith3/subset_bams/NUP98/")
+
+# bams <- lapply(pts,
+#        subset_bam,
+#        fusion_data = nup98.fusions,
+#        file_manifest = RBD_RNAseq_files,
+#        outdir=outdir)
+```
+
+
+## Fusion Inspector
+
+SAVE THE RESULTS 
+cd /fh/scratch/delete90/meshinchi_s/jlsmith3/STAR-Fusion/
+find . -maxdepth 3 -type d -name "FusionInspector-inspect" | less
+ 
+```{r}
+# fi_res_path <- file.path(SCRATCH,"jlsmith3/STAR-Fusion/relapsed_AML")
+
+fi_res_path <- file.path(TARGET, "RNA/mRNAseq/level2/2020Feb_BCCA_Fusion_Inspector_GRCh37_Illumina_Data")
+fusion_insp_files <- dir(fi_res_path, 
+                         recursive = TRUE,
+                         pattern="^.+abridged.tsv.annotated.coding_effect$")
+
+length(fusion_insp_files)
+```
+
+```{r}
+fi_res_path <- file.path(TARGET, "RNA/mRNAseq/level2/fusion/2020Feb_BCCA_Fusion_Inspector_GRCh37_Illumina_Data")
+fusion_insp_html_files <- dir(fi_res_path, 
+                         recursive = TRUE,
+                         pattern="^.+web.html$",
+                         full.names = TRUE)
+
+length(fusion_insp_html_files)
+head(fusion_insp_html_files)
+```
+
+```{r}
+usi_regex <- pull(NUP98.grps, USI) %>% 
+  paste(., collapse="|")
+
+# NUP98.FI.results <- fusion_insp_files[grepl(usi_regex, fusion_insp_files)]
+```
+
+```{r}
+kdm5A_regex <- NUP98.grps %>% 
+  filter(NUP98.Rearranged.Groups=="NUP98-KDM5A") %>% 
+  pull(USI) %>% 
+  paste(., collapse = "|")
+
+# kdm5A_regex
+
+#These are from the relapse batch, so almost none of the diagnostic samples :/
+KDM5A.FI.results <- fusion_insp_html_files[grep(kdm5A_regex, fusion_insp_html_files)]
+# new_files <- KDM5A.FI.results %>% 
+#   str_split_fixed(., pattern = "/", n=15) %>% 
+#   .[,c(13:14)] %>% 
+#   apply(., 1, function(x) paste0("Fusion_Inspector/",paste(x, collapse = "")))
+```
+
+```{r}
+# FI.data <- data.frame(file.path=)
+# toFill <-
+```
+
+```{r}
+PAYASV <- read.delim(file.path(fi_res_path,"TARGET-20-PAYASV-09A-01R_RBS_withJunctionsOnGenome_dupsFlagged_/FusionInspector-inspect/finspector.FusionInspector.fusions.tsv"),
+                     sep="\t") %>%
+  dplyr::filter(grepl("NUP98--KDM5A", X.FusionName)) 
+
+PAYASV
+
+ReadIDs <- PAYASV %>% 
+  select(JunctionReads,SpanningFrags) %>% 
+  unlist() %>%s
+  str_split(., pattern=",") %>%
+  unlist() %>%
+  gsub("\\/[12]$", "", .)
+
+ReadIDs
+# write.table(ReadIDs,file.path(outdir,"PAYASV_ReadIDs.txt"), sep="\n", quote = FALSE, row.names = FALSE, col.names = FALSE)
+```
+
+
+
+
+
+
+## Exons of the Breakpoints 
+
+Notes About Orientation of fusion partners 5' and 3' 
+
+STAR:
+
+1)  Genes are listed as 'LeftGene' and 'RightGene'.  Is is always the case that in the fusion transcript that the 'LeftGene' is 5' relative to the 'RightGene'? 
+
+Yes, that should always be the case.
+
+ 
+2)  Is there a way to access the fusion RNA sequences that STAR-Fusion identifies as being fusions?
+
+The fusion sequences are not currently provided in the output, but we could aim to do this in a future version. The breakpoint coordinates and orientation are provided, so you could extract the sequences from the genome.
+
+ 
+3)  How could I determine the orientation of the genes involved in the fusion (for example if one gene was inverted before being fused to the other gene?
+
+Each fusion breakpoint is specified like so:  chr19:15443101:-  , formatted as:  'chr:coordinate:orient'
+and so you can figure out how they go together this way.  All you know in the output, though, is how the left and right gene go together, and it'll always be in the sense-sense orientation (as required by the software).
+
+
+TransAbyss:
+has columns that state 5' and 3' partner 
+also only includes sense fusions
+
+CICERO:
+
+
+
+```{r}
+nup.exon.ranges <- exonsBy(Grch37.txdb, by="tx", use.names=TRUE)[transcriptIDmap$ensembl_transcript_id]
+names(nup.exon.ranges) <- transcriptIDmap$external_gene_name
+
+# nup.exon.ranges
+length(nup.exon.ranges) #16 unique gene transcripts
+```
+
+```{r}
+nup.intron.ranges <- intronsByTranscript(Grch37.txdb, use.names=TRUE)
+nup.intron.ranges <- nup.intron.ranges[transcriptIDmap$ensembl_transcript_id]
+names(nup.intron.ranges) <- transcriptIDmap$external_gene_name
+
+nup.intron.ranges <- mcol_intron_rank(nup.intron.ranges)
+
+
+length(nup.intron.ranges) #16
+# nup.intron.ranges
+```
+
+```{r}
+NUP98.primary.groups <- NUP98.primary.breakpoints %>% 
+  separate(Breakpoint_Order, into=c("chromosomes_A",
+                              "pos_A",
+                              "chromosomes_B",
+                              "pos_B"), sep = "[:\\|]",
+           remove = F) %>%
+  ungroup() 
+# dim(NUP98.primary.groups)
+
+source(file.path(SCRIPTS, "RNAseq_Analysis/fusBreakpoint/R/exon_annotation_functions.R"))
+nup.primary.breakpt.group <- purrr::map_dfr(pull(NUP98.primary.groups, Sample), 
+                                            function(i){
+                                              df <- dplyr::filter(NUP98.primary.groups, Sample==i)
+                                              define_exon_junctions(df, 
+                                                                    exon_ranges_GR=nup.exon.ranges,
+                                                                    intron_ranges_GR = nup.intron.ranges)
+                                              }) 
+
+
+dim(nup.primary.breakpt.group) # 172  33
+head(nup.primary.breakpt.group)
+# setdiff(NUP98.primary.groups$Sample, nup.primary.breakpt.group$Sample) #"TARGET.20.PAXJFS.03A.01R"
+```
+
+```{r}
+exon_junctions_summary.toFix <- nup.primary.breakpt.group %>% 
+  mutate(FIX=case_when(
+    !grepl("^NUP98$", geneA) ~ TRUE,
+    TRUE ~  FALSE)) %>% 
+  dplyr::filter(FIX) %>%
+  dplyr::select(-Fusion,-Exons) %>%
+  rename_at(vars(matches("A$")), ~gsub("A$", "2", .)) %>%
+  rename_at(vars(matches("B$")), ~gsub("B$", "1", .)) %>%
+  rename_all(~gsub("1$","A", gsub("2$", "B", .))) %>%
+  mutate(Fusion=paste(geneA,geneB, sep="-"),
+         Exons=case_when(
+           !is.na(exon_rankA) & !is.na(exon_rankB) ~ paste(exon_rankA, exon_rankB, sep="_"),
+           !is.na(exon_rankA) & is.na(exon_rankB) ~ paste(exon_rankA, intron_rankB, sep="_"),
+           is.na(exon_rankA) & !is.na(exon_rankB) ~ paste(intron_rankA, exon_rankB, sep="_"),
+           is.na(exon_rankA) & is.na(exon_rankB) ~ paste(intron_rankA, intron_rankB, sep="_")))  
+  # dplyr::select(matches("A$"), matches("B$")) 
+
+exon_junctions_summary.toFix
+```
+
+```{r}
+#Fix the conventions for fusions....
+NUP98.primary.groups.clean <- dplyr::filter(nup.primary.breakpt.group, grepl("^NUP98$", geneA)) %>% 
+  bind_rows(., exon_junctions_summary.toFix) %>% 
+  #NUP98-BPTF has differing data from TA and STAR. TA states 5' NUP98 and STAR states 5' NSD1.
+  #No real way to break ties... so I will assume there is a reciprocal of each in this patient. 
+  #Examining each patients raw data, almost 100% of NUP98-NSD1 and NUP98-Others had reciprocals identified. 
+  mutate_at(vars(Breakpoint), ~case_when(
+    !grepl("^11:37", .) ~ Breakpoint_Order,
+    TRUE ~ .)) %>% 
+  mutate(USI=str_split_fixed(Sample,"\\.", n=5)[,3]) %>%
+  left_join(., NUP98.grps, by=c("USI")) %>%
+
+ mutate(Fusion_Exons=case_when(
+    geneA == "NUP98" & !is.na(exon_rankA) & !is.na(exon_rankB) ~ paste(exon_rankA,exon_rankB, sep="_"),
+    geneA == "NUP98" & !is.na(intron_rankA) & !is.na(exon_rankB) ~ paste(intron_rankA, exon_rankB, sep="_"),
+    geneA == "NUP98" & !is.na(exon_rankA) & !is.na(intron_rankB) ~ paste(exon_rankB, intron_rankB, sep="_"),
+  )) %>%
+  mutate(NUP98_Exons=case_when(
+    geneA == "NUP98" & !is.na(exon_rankA) ~ paste0("Exon", exon_rankA),
+    geneA == "NUP98" & !is.na(intron_rankA) ~ as.character(intron_rankA),
+    geneB == "NUP98" & !is.na(intron_rankB) ~ as.character(intron_rankB))) %>%
+
+  group_by(Fusion, Exons) %>%
+  mutate(Fusion_Exon_Group=case_when(
+    n() >= 5 ~ paste0("Exon",Exons),
+    n() < 5 & !grepl("KDM5A|NSD1",Fusion) ~ "NUP98-X",
+    n() < 5 ~ "Other_Exons")) %>%
+  ungroup() %>%
+
+  group_by(NUP98.Rearranged.Groups, NUP98_Exons) %>%
+  mutate(NUP98_Exon_Group=case_when(
+    n() >= 5 ~ NUP98_Exons,
+    n() < 5 ~ "Other_Exons"
+  )) %>%
+
+  ungroup() %>%
+  dplyr::select(Sample, NUP98.Rearranged.Groups, NUP98.Rearranged,
+         Breakpoint,Breakpoint_Order,
+         Fusion_Exons,NUP98_Exons, everything(),
+         -keep) %>%
+  arrange(desc(NUP98.Rearranged.Groups), breakpoint_comparison)
+
+head(NUP98.primary.groups.clean)
+dim(NUP98.primary.groups.clean) #162  41
+
+# write.csv(NUP98.primary.groups.clean,"Exon_Juncs/TARGET_AML_NUP98_fusion_exons_3.20.21.csv", row.names = FALSE)
+```
+
+```{r}
+# table(NUP98.primary.groups.clean$Fusion_Exon_Group)
+# table(NUP98.primary.groups.clean$NUP98_Exon_Group)
+# table(NUP98.primary.groups.clean$NUP98_Exons) %>%  length() # 10 breakpoints 
+```
+
+```{r}
+# NUP98.primary.groups<- read.csv("TARGET_AML_NUP98_fusion_exons.csv")
+
+exon14.chisqr.df <- NUP98.primary.groups.clean %>%  
+  filter(!grepl("replicate", Sample)) %>% 
+  mutate(NUP98_Exons=ifelse(NUP98_Exons=="Exon14", NUP98_Exons, "OtherExons")) %>%
+  mutate_at(vars(NUP98.Rearranged.Groups), ~ifelse(.=="NUP98-KDM5A", "NUP98-KDM5A", "Other_NUP98")) %>% 
+  group_by(NUP98.Rearranged.Groups, NUP98_Exons) %>% 
+  summarize(N=n()) %>% 
+  ungroup() %>% 
+  spread(NUP98_Exons, N) %>% 
+  as.data.frame() %>% 
+  column_to_rownames("NUP98.Rearranged.Groups")
+
+
+# exon14.chisqr.df
+# dim(exon14.chisqr.df)
+x2 <- chisq.test(as.matrix(exon14.chisqr.df),simulate.p.value=T)
+x2
+```
+
+```{r}
+ExonCoords <- NUP98.primary.groups.clean %>%
+  mutate(NUP98_Exon_Coords=case_when(
+              geneA == "NUP98" ~ paste(seqnamesA,startA, endA, paste0(strandA,"1"), sep=":"),
+              geneB == "NUP98" ~ paste(seqnamesB,startB, endB, paste0(strandB,"1"), sep=":")), 
+    NUP98_Exon_Name=case_when(
+      geneA == "NUP98" ~ exon_nameA,
+      geneB == "NUP98" ~ exon_nameB)) %>% 
+ dplyr::select(NUP98_Exons, NUP98_Exon_Name, NUP98_Exon_Coords) %>% 
+ distinct() %>% 
+arrange(NUP98_Exons)
+  
+# ExonCoords
+# paste(ExonCoords$NUP98_Exon_Coords, collapse = ", ")
+
+# exonDomains <- read.csv("NUP98/NUP98_Exon_Domains.txt") 
+# exonDomains
+
+#this is concerning. the GTF is so out of date these 'retired' exon IDs apparently do not have any mapping in the current Ensembl DBs....
+#I cant even find them by thier "stable IDs" in google...
+```
+
+```{r}
+forSoheil <- NUP98.primary.groups.clean %>% 
+  dplyr::filter(!grepl("_replicate", Sample)) %>% 
+  mutate(NUP98_EnsemblID=transcriptIDmap$ensembl_transcript_id[transcriptIDmap$external_gene_name=="NUP98"],
+         NUP98_RefSeq=transcriptIDmap$refseq_mrna[transcriptIDmap$external_gene_name=="NUP98"])  %>% 
+  left_join(., merged, by="USI") %>% 
+  dplyr::select(Sample:Algorithm,NUP98_EnsemblID,NUP98_RefSeq, everything(),
+                -Breakpoint_Order, -Fusion.Category) %>% 
+  arrange(desc(NUP98.Rearranged.Groups), breakpoint_comparison)
+
+# dim(forSoheil) #156 189
+head(forSoheil)
+# write.csv(forSoheil,"TARGET_AML_NUP98_Fusion_Exons_with_CDEs.csv", row.names = TRUE)
+```
+
+```{r}
+NUP98.X_Table <- NUP98.primary.groups.clean %>% 
+  dplyr::filter(!grepl("_replicate", Sample), NUP98.Rearranged.Groups=="NUP98-X") %>% 
+  dplyr::select(USI, NUP98.Rearranged.Groups, NUP98.Rearranged, Breakpoint, 
+                geneA, exon_rankA, geneB, exon_rankB ,Fusion_Exons,Breakpoint_Order) %>%
+  # mutate_at(vars(Breakpoint), ~case_when(
+  #   !grepl("^11:37", .) ~ Breakpoint_Order,
+  #   TRUE ~ .)) %>% 
+  group_by(NUP98.Rearranged) %>%
+  mutate(Number_of_Samples=n()) %>%
+  # mutate_at(vars(Breakpoint, Fusion_Exons), ~collapseRows(., uniq = T)) %>%
+  ungroup() %>%
+
+  arrange(desc(Number_of_Samples)) %>% 
+  left_join(., dplyr::select(transcriptIDmap,external_gene_name, 
+                      `Ensembl Transcript ID geneB`=ensembl_transcript_id, 
+                      `RefSeq Accession geneB`=refseq_mrna), 
+            by=c("geneB"="external_gene_name")) %>% 
+  dplyr::select(Patient=USI, 
+                `NUP98 Group`=NUP98.Rearranged.Groups,
+                `NUP98 Fusion`=NUP98.Rearranged,
+                Breakpoint,
+                geneA:exon_rankB,
+                `Ensembl Transcript ID geneB`, 
+                `RefSeq Accession geneB`)
+
+
+
+
+# write.csv(NUP98.X_Table, "Exon_Juncs/TARGET_AML_NUP98.X_Fusion_Junctions_Table_forSupp.csv")
+any(!grepl("^11:37", NUP98.X_Table$Breakpoint))
+```
+
+```{r}
+Exon_Table <- NUP98.primary.groups.clean %>% 
+  dplyr::filter(!grepl("_replicate", Sample)) %>% 
+  group_by(NUP98_Exons) %>% 
+  summarize(N=n(),
+            Percent= round((n()/nrow(.))*100, digits=2)) %>% 
+  arrange(desc(Percent)) %>% 
+  mutate(NUP98_Exons=factor(NUP98_Exons, levels=NUP98_Exons)) %>% 
+  arrange(desc(NUP98_Exons)) %>% 
+  mutate(lab.pos = cumsum(Percent)-.5*Percent) %>% 
+  mutate(NUP98_EnsemblID=transcriptIDmap$ensembl_transcript_id[transcriptIDmap$external_gene_name=="NUP98"],
+         NUP98_RefSeq=transcriptIDmap$refseq_mrna[transcriptIDmap$external_gene_name=="NUP98"]) 
+
+head(Exon_Table)
+# View(Exon_Table)
+# write.csv(Exon_Table,"TARGET_AML_NUP98_Exon_Table_forSupp_2.16.21.csv", row.names = FALSE)
+# sum(Exon_Table$N)
+```
+
+```{r fig.width=7, fig.height=7}
+cc_exons <- brewer.pal(10,"Paired")
+names(cc_exons) <- levels(Exon_Table$NUP98_Exons)
+
+temp <- dplyr::filter(Exon_Table, Percent > 5)
+
+exon_pie <- ggplot(data = Exon_Table, 
+       aes(x = "", y = Percent, fill = NUP98_Exons))+
+  geom_col(width = 0.5, color="black", size=0.25) +
+  annotate(geom="label",
+           x=1.0, y=temp$lab.pos, 
+           label=paste0(temp$Percent,"%"),
+           size=9.5) +
+  geom_text_repel( data=dplyr::filter(Exon_Table, Percent < 5),
+                    aes(x = 1.25, y = lab.pos,label=paste0(Percent,"%")),
+                    nudge_x = 0.25,
+                    segment.size = .5,
+                    min.segment.length = 0.1,
+                    size=8,
+                    show.legend = FALSE,
+                   inherit.aes = F) +
+  labs(title="Percent of NUP98 Exon Junctions Across NUP98-R AML") +
+  coord_polar("y", start=1) +
+  # scale_fill_brewer(palette="Paired") +
+  scale_fill_manual(values=cc_exons) +
+  theme_void() +
+  theme(legend.position = "left", 
+        plot.title = element_text(size=20),
+        legend.title = element_blank(), 
+        legend.text = element_text(size=14))
+
+exon_pie
+# ggsave(plot=exon_pie,filename = "Figures/NUP98_Exon_Junctions_pie_3.20.21.svg",
+#        height = 9, width=9, device="svg")
+```
+
+
+```{r}
+Exon_Table_byGroup <- NUP98.primary.groups.clean %>%
+  dplyr::filter(!grepl("_replicate", Sample)) %>% 
+  # left_join(., dplyr::select(merged, USI, M7_AML), 
+  #           by="USI") %>% 
+  group_by(NUP98.Rearranged.Groups,NUP98_Exons) %>%
+  summarize(N=n()) %>% 
+  arrange(NUP98.Rearranged.Groups,desc(N)) %>% 
+  ungroup() %>% 
+  
+  group_by(NUP98.Rearranged.Groups) %>% 
+  mutate(Percent=round(N/sum(N)*100, digits=2)) %>% 
+  ungroup() %>% 
+  
+  mutate(NUP98_Exons=factor(NUP98_Exons, 
+                            levels=rev(levels(Exon_Table$NUP98_Exons)))) %>% 
+  arrange(NUP98.Rearranged.Groups,desc(NUP98_Exons)) %>% 
+  group_by(NUP98.Rearranged.Groups) %>% 
+  mutate(lab.pos_coxcomb=cumsum(N),
+         y.lab.pos=cumsum(Percent)-.5*Percent) %>% 
+  ungroup() %>% 
+  
+  mutate(NUP98_EnsemblID=transcriptIDmap$ensembl_transcript_id[transcriptIDmap$external_gene_name=="NUP98"],
+         NUP98_RefSeq=transcriptIDmap$refseq_mrna[transcriptIDmap$external_gene_name=="NUP98"])  
+
+
+Exon_Table_byGroup
+# head(Exon_Table_byGroup)
+ # write.csv(Exon_Table_byGroup,"TARGET_AML_NUP98_Exon_Table_byGroup_forSupp_3.20.21.csv", row.names = FALSE)
+```
+
+```{r fig.height=10, fig.width=10}
+temp <- dplyr::filter(Exon_Table_byGroup, Percent > 10)
+
+#semi-coxcomb because it is by percentage not proportional to the N in each NUP98-R
+coxcomb <- ggplot(Exon_Table_byGroup, aes(x = NUP98.Rearranged.Groups, y = Percent, fill=NUP98_Exons)) +
+  geom_col(width=0.9, size=0.2,color="black") +
+  # scale_fill_brewer(palette = "Paired")  +
+  scale_fill_manual(values=cc_exons) +
+  lims(y=c(0,100)) +
+  coord_polar("x") +
+  
+  annotate(geom="label",
+           x=temp$NUP98.Rearranged.Groups,
+           y=temp$y.lab.pos, 
+           label=paste0(temp$Percent,"%"),
+           size=4.5) +
+  
+  geom_text_repel(data=filter(Exon_Table_byGroup,Percent <= 10),
+                  # aes(x=NUP98.Rearranged.Groups,, y=y.lab.pos,label=Percent),
+                  aes(x=c(rep(1.55,4) ,rep(2.55,4)),
+                      y=y.lab.pos,
+                      label=paste0(Percent, "%")),
+                  nudge_x=c(rep(-0.032,4), rep(-0.055,4)),
+                  nudge_y = c(rep(5,4), rep(2,4)),
+                  min.segment.length = 0.1,
+                  size=4) +
+  #settings for labels from TransAbyss breakpoint data
+  # geom_text_repel(data=filter(Exon_Table_byGroup,Percent <= 5),
+  #                 # aes(x=NUP98.Rearranged.Groups,, y=y.lab.pos,label=Percent),
+  #                 aes(x=c(rep(0.56,1),rep(1.55,3) ,rep(2.55,5)),
+  #                     y=y.lab.pos,
+  #                     label=paste0(Percent, "%")),
+  #                 nudge_x=c(rep(-0.057,1), rep(-0.032,3), rep(-0.055,5)),
+  #                 nudge_y = c(rep(50,1), rep(5,3), rep(2,5)),
+  #                 min.segment.length = 0.1,
+  #                 size=4) +
+  labs(title="Percent of NUP98 Exon Junctions within NUP98-R AML") +
+  guides(fill = guide_legend(reverse = TRUE)) +
+  theme_void() +
+  theme(legend.position = "left",
+        legend.title = element_blank(),
+        plot.margin = margin(b=4,r=10, unit="mm"),
+        plot.title = element_text(size=20),
+        legend.text = element_text(size=14),
+        axis.text.x = element_text(size=12, angle=-10, 
+                                   vjust=5, margin=margin(l=8,r=8,b=8,t=8, unit="mm")))
+
+
+coxcomb
+# ggsave(plot=coxcomb, filename = "Figures/NUP98_Exon_Junctions_Per_Group_coxcomb_3.20.21.svg",
+# height = 9, width = 9, units = "in", device="svg")
+```
+
+```{r fig.height=7, fig.width=7, eval=FALSE}
+#Coxcomb/windrose plot
+
+df <- NUP98.primary.groups.clean %>% 
+  dplyr::filter(!grepl("replicate", Sample)) %>% 
+  mutate(NUP98_Exons=factor(NUP98_Exons, levels=rev(levels(Exon_Table$NUP98_Exons))))
+
+
+ggplot(df, aes(x = NUP98.Rearranged.Groups, fill=NUP98_Exons)) +
+  geom_bar(width=1, color="black", size=0.5) +
+  # geom_text_repel(data=Exon_Table_byGroup,
+  #                 aes(x=c(rep(1.25,3),rep(2.25,5) ,rep(3.25,8)),
+  #                     y=lab.pos_coxcomb, 
+  #                     label=paste0(Percent,"%")),
+  #                 nudge_x = 1,
+  #                 nudge_y = 1,
+  #                 direction="both",
+  #                 min.segment.length = 0.1,
+  #                 # segment.size=unit(1,"mm"),
+  #                 force=10,
+  #                 size=5) +
+  # scale_y_continuous(breaks=seq(0,105,by=10)) +
+  coord_polar(theta = "x") +
+  scale_fill_manual(values=cc_exons) +
+  theme_void() 
+  # theme(legend.position = "left")
+```
+
+```{r fig.height=5, fig.width=7}
+exon_plot <- ggplot(Exon_Table_byGroup, aes(x = NUP98.Rearranged.Groups, y = Percent, fill=NUP98_Exons)) +
+  geom_col(width=0.8, size=0.5,color="black") +
+  coord_flip() +
+  scale_fill_brewer(palette = "Paired") +
+  labs(x="", y="Percent of Samples with Exon Junction",title="Percentage of NUP98 Exon Junctions within NUP98-R AML") +
+  theme_classic() +
+  theme(axis.text = element_text(size=14, color="black"),
+        axis.title.y = element_text(size=12),
+        legend.title = element_blank(),
+        legend.text = element_text(size=12))
+
+
+exon_plot
+# ggsave(plot=exon_plot, filename = "NUP98_Exon_Junctions_Per_Group.pdf", height = 5, width = 7, units = "in", device="pdf")
+```
+
+### Exons to Protein Domains
+
+```{r eval=FALSE}
+library(ensembldb)
+```
+
+
+### Outcome Analysis
+
+```{r}
+outcome_df <- NUP98.primary.groups.clean %>%
+    left_join(., dplyr::select(merged, USI, matches("^OS\\.|EFS\\.|Event")),
+            by="USI") %>% 
+    dplyr::filter(!is.na(EFS.time..days.),
+                  !grepl("_replicate", Sample))
+
+dim(outcome_df)
+table(outcome_df$Fusion_Exon_Group,
+      outcome_df$NUP98.Rearranged.Groups)
+
+table(outcome_df$NUP98_Exon_Group,
+      outcome_df$NUP98.Rearranged.Groups)
+# any(duplicated(outcome_df$USI))
+```
+
+```{r}
+partner.exon.KM <- KM.plots(df=dplyr::filter(outcome_df, NUP98.Rearranged.Groups != "NUP98-X"),
+                    group_vars = "NUP98.Rearranged.Groups",
+                    type = "OS",
+                    covariate = "Fusion_Exon_Group",
+                    cohort = "1031")
+
+partner.exon.KM
+```
+
+No difference in outcome by different breakpoints, except perhaps NUP98-NSD1 "other Exons" ??
+Also Exon 14 tends to have worse outcomes...
+
+```{r}
+summary(partner.exon.KM$OS.fit[[1]], times=c(0,1,2,3,5))
+summary(partner.exon.KM$OS.fit[[2]], times=c(0,3,5))
+
+
+summary(partner.exon.KM$EFS.fit[[1]], times=c(0,3,5))
+summary(partner.exon.KM$EFS.fit[[2]], times=c(0,3,5))
+```
+
+```{r fig.width=16, fig.height=12}
+# pdf("Figures/TARGET_AML_NUP98_Outcome_by_Breakpoint_3.20.21.pdf", height = 12, width = 16)
+grid.arrange(grobs=c(partner.exon.KM$OS,partner.exon.KM$EFS), ncol=2)
+# dev.off()
+```
+
+```{r}
+nup.exon.df <- outcome_df %>%
+  group_by(NUP98.Rearranged.Groups, NUP98_Exon_Group) %>%
+  dplyr::filter(n() >= 3) %>% 
+  ungroup()
+
+NUP98.exon.KM <- KM.plots(df=nup.exon.df,
+                    group_vars = "NUP98.Rearranged.Groups",
+                    type = "OS",
+                    covariate = "NUP98_Exon_Group",
+                    cohort = "1031")
+```
+
+```{r fig.width=20, fig.height=18}
+# pdf("Figures/TARGET_AML_NUP98_Outcome_by_NUP98_Exon_3.20.21.pdf", height = 12, width = 16)
+grid.arrange(grobs=c(NUP98.exon.KM$OS,NUP98.exon.KM$EFS), ncol=3)
+# dev.off()
+```
+
+## Tally Unique Number of Breakpoints
+
+```{r}
+NUP98.primary.groups.clean %>% 
+  dplyr::select(NUP98.Rearranged.Groups, Breakpoint) %>% 
+  group_by(NUP98.Rearranged.Groups, Breakpoint) %>% 
+  count() %>% 
+  ungroup() %>% 
+  group_by(NUP98.Rearranged.Groups) %>% 
+  mutate(Total_Breapoints=n()) %>% 
+  arrange(NUP98.Rearranged.Groups, desc(n)) 
+  # filter(!grepl("^11:37", Breakpoint)) #OK all NUP98 5'
+```
+
+```{r}
+NUP98.primary.groups.clean %>% 
+  dplyr::select(NUP98.Rearranged.Groups,Fusion,Fusion_Exons,everything()) %>% 
+  # filter(NUP98.Rearranged.Groups=="NUP98-KDM5A") %>% 
+  group_by(NUP98.Rearranged.Groups, Fusion_Exons) %>% 
+  count() %>% 
+  ungroup() %>% 
+  group_by(NUP98.Rearranged.Groups) %>% 
+  mutate(Total_Breapoints=n())
+
+
+# NUP98.primary.groups.clean %>% 
+#   dplyr::select(NUP98.Rearranged.Groups,Fusion,Fusion_Exons,everything()) %>% 
+#   filter(NUP98.Rearranged.Groups=="NUP98-KDM5A") %>% 
+#   group_by(NUP98.Rearranged.Groups, Fusion_Exons) %>% 
+#   count()
+```
+
+
+## PECAN Genome Paint
+
+```{r}
+nup.genes.ranges <- transcriptsBy(Grch37.txdb, by="gene")[nup.genes$gene_id]
+names(nup.genes.ranges) <- nup.genes$geneSymbol
+
+length(nup.genes.ranges) #16 unique genes 
+# nup.genes.ranges
+```
+
+
+ -needs  data hosted on S3 
+https://s3-us-west-2.amazonaws.com/fh-pi-meshinchi-s/SR/fusion_viz/example_SVCNV.txt.sorted.gz #this works!! 
+
+Fusion Example:
+chr1  19157328  19157328  {"chrB": "chr13", "dt": 2, "geneA": "chr1", "geneB": "VWA8", "posB": 42278669, "sample": "SJRHB009_D", "strandA": "-", "strandB": "+"}
+chr1  19157486  19157486  {"chrA": "chr13", "dt": 2, "geneA": "VWA8", "geneB": "chr1", "posA": 42278658, "sample": "SJRHB009_D", "strandA": "+", "strandB": "-"}
+
+I think the example data is incorrect - it should have 2 lines where they are reciprocals - so line 1 posB should be in line 2 and it states that in the instructions. Also this example DOES not look correct on the genome paint browser. There is no fusion track but instead 2 dots at chr 1 breakpoint coordinates. 
+
+
+SV Example:
+chr12	12029972	12029972	{"chrB": "chr21", "dt": 5, "posB": 36417895, "sample": "SJETV039_D", "strandA": "+", "strandB": "-"}
+chr21	36417895	36417895	{"chrA": "chr12", "dt": 5, "posA": 12029972, "sample": "SJETV039_D", "strandA": "+", "strandB": "-"}
+
+
+```{r}
+example <- data.frame(chr=c("chr1","chr1"),
+                      start=c(19157328,19157486),
+                      end=c(19157328,19157486),
+                      json=c("{\"chrB\": \"chr13\", \"dt\": 2, \"geneA\": \"chr1\", \"geneB\": \"VWA8\", \"posB\": 42278669, \"sample\": \"SJRHB009_D\", \"strandA\": \"-\", \"strandB\": \"+\"}",
+                      "{\"chrA\": \"chr13\", \"dt\": 2, \"geneA\": \"VWA8\", \"geneB\": \"chr1\", \"posA\": 42278658, \"sample\": \"SJRHB009_D\", \"strandA\": \"+\", \"strandB\": \"-\"}"))
+
+
+# example
+# write.table(example, "~/example_SVCNV.txt",quote = FALSE,sep = "\t",col.names = FALSE, row.names = FALSE)
+```
+
+```{r}
+#small function to fix the breakpoints when ordering causes issues
+fix_nup <- function(breakpoint){
+  b <- as.vector(str_split_fixed(breakpoint, pattern="\\|", n=2))
+  idx <- grepl("^11:37",b)
+  fixed <- paste(c(b[idx],b[!idx]), collapse="|")
+  return(fixed)
+}
+
+#summarized breakpoints for visualization with genome paint
+forGenPaint <- NUP98.primary.groups.clean %>% #NUP98.primary.breakpoints %>% 
+  filter(!grepl("_replicate", Sample)) %>% 
+  dplyr::select(NUP98.Rearranged.Groups, Fusion, Breakpoint) %>% 
+  group_by(NUP98.Rearranged.Groups, Fusion, Breakpoint) %>% 
+  count() %>% 
+  ungroup() %>% 
+  
+  group_by(NUP98.Rearranged.Groups) %>% 
+  mutate(Total_Breapoints=n()) %>% 
+  arrange(NUP98.Rearranged.Groups, desc(n)) %>% 
+  
+  # order so that NUP98 is 5' in the fusion figures. 
+  # mutate_at(vars(Breakpoint_Order), ~case_when(
+  #   ! grepl("^11:37", .) ~ fix_nup(.),
+  #   TRUE ~ .)) %>%
+
+  #Make chr and position columns seperately
+  separate(Breakpoint, into=c("chromosomes_A",
+                              "pos_A",
+                              "chromosomes_B",
+                              "pos_B"), sep = "[:\\|]",
+           remove = F) %>%
+  ungroup() %>%
+  
+  # group_by(Fusion.Category) %>%
+  group_by(Fusion) %>% 
+  mutate(FusionID=paste(Fusion, 1:n(), sep="_")) %>%
+  ungroup() %>%
+  
+  dplyr::select(Fusion,FusionID,n, Total_Breapoints, 
+         chromosomes_A:pos_B) %>%
+  distinct()
+  
+
+dim(forGenPaint) #27  8
+head(forGenPaint)
+
+# forGenPaint
+# table(forGenPaint$Fusion.Category) #NUP98-NSD1 has 8 unique breakpoints and NUP98-KDM5A has 4!
+```
+
+
+```{r}
+genome_paint_NUP98 <- purrr::map(1:nrow(forGenPaint),  function(i){
+  df <- dplyr::slice(forGenPaint,i)
+  genome_paint_format(df=df, fusion_genes_GR = nup.genes.ranges)
+})
+
+genome_paint_NUP98.df <- bind_rows(genome_paint_NUP98)
+head(genome_paint_NUP98.df)
+# dim(genome_paint_NUP98.df) #54  4
+# write.table(genome_paint_NUP98.df, "TARGET_AML_NUP98_Fusions_for_GenomePaint_3.31.21.txt", sep="\t", quote=FALSE, row.names=FALSE, col.names=FALSE)
+
+#It will only work with 2 line files for me. The full concatenated version for some reason wont read correctly into the Genome Paint Viewer
+# lapply(1:length(genome_paint_NUP98),
+#        function(i) write.table(genome_paint_NUP98[[i]], 
+#                                paste0("Genome_Paint_Tracks/TARGET_AML_",forGenPaint$FusionID[[i]], "_for_GenomePaint.txt"),
+#                                quote = FALSE,sep = "\t",col.names = FALSE, row.names = FALSE))
+# 
+# 
+# write.table(genome_paint_NUP98,"TARGET_AML_NUP98_Fusions_for_GenomePaint_12.29.20.txt",
+#             quote = FALSE,sep = "\t",col.names = FALSE, row.names = FALSE)
+```
+
+
+```{ bash }
+#bgzip and tabix from HTSlib software
+
+sort -k1,1 -k2,2n TARGET_AML_NUP98_Fusions_for_GenomePaint.txt > TARGET_AML_NUP98_Fusions_for_GenomePaint.txt.sorted
+bgzip TARGET_AML_NUP98_Fusions_for_GenomePaint.txt.sorted
+tabix -p bed TARGET_AML_NUP98_Fusions_for_GenomePaint.txt.sorted.gz
+
+aws --profile old_account s3 cp --acl public-read TARGET_AML_NUP98_Fusions_for_GenomePaint.txt.sorted.gz.tbi s3://fh-pi-meshinchi-s/SR/fusion_viz/TARGET_AML_NUP98_Fusions_for_GenomePaint.txt.sorted.gz.tbi 
+
+aws --profile old_account s3 cp --acl public-read TARGET_AML_NUP98_Fusions_for_GenomePaint.txt.sorted.gz s3://fh-pi-meshinchi-s/SR/fusion_viz/TARGET_AML_NUP98_Fusions_for_GenomePaint.txt.sorted.gz 
+
+```
+
+*New buckets*
+https://s3-us-west-2.amazonaws.com/fh-pi-meshinchi-s-eco-public/genome_paint/TARGET_AML_DDX10-NUP98_1_for_GenomePaint.txt.sorted.gz
+https://s3-us-west-2.amazonaws.com/fh-pi-meshinchi-s-eco-public/genome_paint/TARGET_AML_NUP98-PRRX1_1_for_GenomePaint.txt.sorted.gz
+
+* it now works with the full sized file, so it was likely a bug before
+https://s3-us-west-2.amazonaws.com/fh-pi-meshinchi-s-eco-public/genome_paint/TARGET_AML_NUP98_Fusions_for_GenomePaint_3.31.21.txt.sorted.gz
+
+
+```{r}
+filter(forGenPaint, grepl("KAT7", Fusion))
+filter(NUP98.primary.groups.clean, grepl("KAT7", Fusion))
+```
+
+
+## CIRCOS
+
+```{r}
+nup98.fusions <-  read.csv("TARGET_AML_NUP98_Raw_Fusion_Data_Subset.csv")
+
+head(nup98.fusions)
+head(NUP98.primary.breakpoints)
+NUP98.primary.breakpoints %>% 
+  filter(grepl("DDX10-NUP98|NUP98-PRRX1", Fusion.Category))
+
+```
+
+
+```{r}
+#Format for the circos - one primary breakpoint per sample  
+breakpoint_pos <- NUP98.primary.breakpoints %>% 
+  # dplyr::select(nup98.fusions,Sample, Fusion.Category,
+  #                        breakpoint.TA,Breakpoints.STAR,Breakpoint.CICERO) %>% 
+  # # gather(Algorithm, Breakpoint,-Fusion.Category,-Sample) %>%
+  # dplyr::filter(!is.na(Breakpoint)) %>%
+  # arrange(Sample) %>% 
+  # 
+  # #dplyr::select one breakpoint per patient
+  # group_by(Sample) %>%
+  # mutate(keep=case_when(
+  #   n() == 1 ~ TRUE,
+  #   n() > 1 & any(grepl("breakpoint.TA", Algorithm)) ~ ifelse(grepl("breakpoint.TA", Algorithm), TRUE, FALSE),
+  #   n() > 1 & any(grepl("Breakpoints.STAR", Algorithm)) ~ ifelse(grepl("Breakpoints.STAR", Algorithm), TRUE, FALSE))) %>% 
+  #   
+  # ungroup() %>%
+  # dplyr::filter(keep) %>%
+  # 
+  # #Order breakpoints by Chr to avoid miscounting
+  # rowwise() %>%
+  # mutate_at(vars(Breakpoint), ~order_breakpoints(.)) %>%
+  # ungroup() %>% 
+
+  mutate_at(vars(Breakpoint_Order), ~case_when(
+    grepl("DDX10-NUP98|NUP98-PRRX1", Fusion.Category) ~ Breakpoint,
+    TRUE ~ . )) %>% 
+
+  group_by(Breakpoint_Order,Fusion.Category) %>%
+  summarise(N=n()) %>%
+  arrange(desc(N)) %>%
+  separate(Breakpoint_Order, into=c("links_chromosomes_1",
+                              "links_pos_1",
+                              "links_chromosomes_2",
+                              "links_pos_2"), sep = "[:\\|]",
+           remove = F) %>%
+  mutate_at(vars(links_pos_1,links_pos_2), ~as.numeric(.)) %>% 
+  mutate(Fusion=str_split(Fusion.Category, "-") %>% 
+           sapply(., function(x) paste(x[x=="NUP98"], x[x!="NUP98"], sep="-"))) %>% 
+  arrange(Fusion.Category)
+
+breakpoint_pos
+# length(unique(breakpoint_pos$Fusion.Category))
+# nup98.fusions$Patient[!nup98.fusions$Patient %in% breakpoint_pos$Patient]
+```
+
+
+### Circlize 
+
+```{r}
+suppressPackageStartupMessages(library(circlize))
+```
+
+```{r}
+breakpoint_pos_circ <- breakpoint_pos %>% 
+  ungroup() %>% 
+  mutate_at(vars(links_chromosomes_1, links_chromosomes_2), ~paste0("chr", .))
+
+# head(breakpoint_pos_circ)
+# dim(breakpoint_pos_circ)
+```
+
+```{r}
+# set.seed(123)
+# bed1 = generateRandomBed(nr = 100)
+# bed1 = bed1[sample(nrow(bed1), 20), ]
+# bed2 = generateRandomBed(nr = 100)
+# bed2 = bed2[sample(nrow(bed2), 20), ]
+# 
+# bed1
+
+
+#an idea for the width of the bands could be genomic TSS to breakpoint for geneA and breakpoint to TTS for geneB. 
+bed1 <- breakpoint_pos_circ %>%  
+ dplyr:: select(chr=links_chromosomes_1, 
+         start=links_pos_1, 
+         end=links_pos_1, 
+         value=N, 
+         Fusion)
+
+bed2 <- breakpoint_pos_circ %>%  
+  dplyr::select(chr=links_chromosomes_2, 
+         start=links_pos_2, 
+         end=links_pos_2, 
+         value=N,
+         Fusion) %>% 
+  mutate(color= rep(c("green1","green3",brewer.pal(9,"Greens")[-c(1:2)]), 3)) %>% 
+  mutate(color=case_when(
+    Fusion=="NUP98-KDM5A" ~ "magenta",
+    Fusion=="NUP98-NSD1" ~ "cornflowerblue",
+    TRUE ~ color)) 
+
+bed2 #the NUP98-NSD1 is getting condensed into a singe line. I can't find a way to deacrease "bin" size for the lines since the breakpoints are pretty similar overall. so need to 
+```
+
+
+
+```{r}
+# partners <- transcriptIDmap$Transcript.stable.ID[transcriptIDmap$Gene.name != "NUP98"]
+partners <- transcriptIDmap$ensembl_gene_id[transcriptIDmap$external_gene_name != "NUP98"]
+nup.genes.ranges <- genes(Grch37.txdb)[partners]
+mcols(nup.genes.ranges)$gene_name <- transcriptIDmap$external_gene_name[transcriptIDmap$external_gene_name != "NUP98"]
+TSS <- ifelse(strand(nup.genes.ranges) == "+", 
+              start(nup.genes.ranges), 
+              end(nup.genes.ranges))
+
+nup.genes.ranges
+# length(nup.genes.ranges) #16 unique genes 
+
+# nup.promoters <- promoters(Grch37.txdb, upstream = 3000, downstream = -500)[partners]
+# mcols(nup.promoters)$gene_name <- transcriptIDmap$Gene.name[transcriptIDmap$Gene.name != "NUP98"]
+# nup.promoters
+
+```
+
+
+```{r}
+partners.bed <- data.frame(chr=paste0("chr", nup.genes.ranges@seqnames), 
+                           start=TSS,
+                           end=TSS,
+                           value=paste0("NUP98-",nup.genes.ranges$gene_name)) 
+  
+
+partners.bed
+```
+
+```{r fig.height=10, fig.width=10}
+# pdf("Figures/TARGET_AML_NUP98_Circos_Circlize_09.01.21.pdf", height = 10, width = 10)
+circos.clear()
+circos.par("start.degree" = 90, "gap.degree"=2)
+circos.initializeWithIdeogram(ideogram.height=convert_height(1, "cm"), 
+                              axis.labels.cex=0.5, labels.cex=1.75, major.by=50e6)
+
+circos.genomicLink(bed1, bed2, lwd=2.5,col=rainbow(nrow(bed1)))
+
+circos.genomicLabels(partners.bed, labels.column = 4, side = "inside", 
+                     connection_height = convert_height(0.5,"cm"),
+                     padding=2.0,cex=1.35, font=4)
+
+# dev.off()
+# circos.info()
+```
+
+```{r}
+colorRampPalette( brewer.pal(9,"Greens"))(15) %>% 
+  case_when(
+    gene_name=="KDM5A" ~ "magenta",
+    gene_name=="NSD1" ~ "cornflowerblue",
+    TRUE ~ .)
+```
+
+```{r}
+rainbow(nrow(bed1))
+
+as.data.frame(nup.genes.ranges) %>% 
+  mutate(color=colorRampPalette( brewer.pal(9,"Greens"))(15)) %>% 
+  mutate(color=case_when(
+    gene_name=="KDM5A" ~ "magenta",
+    gene_name=="NSD1" ~ "cornflowerblue",
+    TRUE ~ color)) 
+```
+
+
+```{r}
+colorRampPalette( brewer.pal(9,"Greens"))(15)
+```
+
+
+#### Chordiagram
+
+https://jokergoo.github.io/circlize_book/book/the-chorddiagram-function.html
+
+```{r}
+library(ComplexHeatmap)
+library(circlize)
+```
+
+```{r}
+fix_order <- function(fusion){
+  fusion <- unlist(str_split(fusion,pattern = "-"))
+  idx <- grepl("NUP98", fusion)
+  fus.order <- paste(fusion[idx],fusion[!idx], sep="-") 
+  return(fus.order)
+}
+```
+
+```{r}
+adjacency.list <- NUP98.primary.groups %>% 
+  dplyr::filter(!grepl("replicate", Sample)) %>% 
+  dplyr::select(Sample, Fusion.Category) %>% 
+  rowwise() %>% 
+  mutate(Fusion=fix_order(Fusion.Category)) %>% 
+  ungroup() %>% 
+  separate(Fusion,into=c("to","from")) %>% 
+
+  #Summarize for N of samples to be the width of the bands
+  group_by(from, to) %>%
+  summarize(value=n()) %>% 
+            # value2=case_when(
+            #   grepl("NSD1|KDM5A", from) ~ 2,
+            #   TRUE ~ 1)) %>% #smaller values make the "from" bands larger
+  ungroup() %>% 
+  mutate(value2=case_when(
+              grepl("NSD1|KDM5A", from) ~ 2,
+              TRUE ~ 1))
+
+gene_order <- nup.genes$geneSymbol[!grepl("NUP98|NSD1|KDM5A",nup.genes$geneSymbol)]
+gene_order <- gene_order[order(gene_order)]
+gene_order <- c("NSD1","KDM5A", gene_order,"NUP98")
+
+# head(adjacency.list)
+# dim(adjacency.list)
+
+adjacency.list
+```
+
+Tried ordering by chromosome and it was not that great still.
+Maybe try ordering the samples by Age???Also M7 and FLT3-ITD??
+
+```{r fig.height=10, fig.width=10}
+# grid.col = c(S1 = "red", S2 = "green", S3 = "blue",
+#     E1 = "grey", E2 = "grey", E3 = "grey", E4 = "grey", E5 = "grey", E6 = "grey")
+
+# gene_colors <- c(nup.genes$geneSymbol[!grepl("NUP98",nup.genes$geneSymbol)],"NUP98")
+colorVect <- rainbow(length(gene_order),v=0.9,s=0.9)[-c(15)]
+grid.col <- c("cornflowerblue","magenta", colorVect)
+names(grid.col) <- gene_order
+
+#heights for the initial circos
+h <- unlist(dimnames(adjacency.list[,1:4]))
+
+# svg("TARGET_AML_NUP98_ChordDiagram.svg",width = 10, height = 10)
+circos.par(gap.after = c(rep(3, nrow(adjacency.list)+1)), start.degree = 150,
+           message = FALSE)
+chordDiagram(adjacency.list[,1:4],
+             annotationTrack = "grid",
+             preAllocateTracks = list(track.height = max(strwidth(h))),
+             grid.col, 
+             link.sort = TRUE,
+             link.decreasing = TRUE,
+             # link.largest.ontop = FALSE,
+             link.zindex=rank(adjacency.list$value)[order(adjacency.list$value,
+                                                        decreasing=T)],
+             # direction.type = c("arrows"),
+             # link.arr.type = "big.arrow",
+             # scale = TRUE,
+             
+             order=gene_order, 
+             directional = -1,
+             transparency=0.25,
+             link.border="black", 
+             link.lwd=2)
+
+circos.track(track.index = 1, panel.fun = function(x, y) {
+    circos.text(CELL_META$xcenter, CELL_META$ylim[1], CELL_META$sector.index,
+        facing = "clockwise", niceFacing = TRUE, adj = c(0, 0.5), cex = 1.5)
+}, bg.border = NA) # here set bg.border to NA is important
+
+circos.clear()
+# dev.off()
+```
+
+
+```{r fig.height=10, fig.width=10}
+adj.list.exons <- Exon_Table_byGroup %>% 
+   mutate(NUP98_Exons=NUP98_Exons) %>% 
+  dplyr::select(from=NUP98.Rearranged.Groups, to=NUP98_Exons, value=N) 
+
+# grid.col.exons <- c("magenta","cornflowerblue","green1", rainbow(length(unique(adj.list.exons$to))))
+# names(grid.col.exons) <- c(unique(adj.list.exons$from),unique(adj.list.exons$to))
+
+grid.col.exons <- c("NUP98-KDM5A"="magenta","NUP98-NSD1"="cornflowerblue","NUP98-X"="green1", cc_exons)
+
+h <- unlist(dimnames(adj.list.exons))
+
+
+# svg("TARGET_AML_NUP98_Exons_Chord_Diagram.svg", height = 10, width = 10)
+
+circos.par(gap.after = rep(1.5, 13), start.degree = 150)
+chordDiagram(adj.list.exons,
+             grid.col.exons, 
+             annotationTrack = "grid",
+             preAllocateTracks = list(track.height = max(strwidth(h))),
+             link.sort = TRUE,
+             link.decreasing = TRUE,
+             link.largest.ontop = FALSE,
+             # link.rank=rank(adjacency.list$value)[order(adjacency.list$value,
+             #                                            decreasing=T)],
+             # direction.type = c("arrows"),
+             # link.arr.type = "big.arrow",
+             # scale = TRUE,
+             # order=gene_order, 
+             directional = 1,
+             big.gap=50,
+             transparency=0.4,
+             link.border="black", 
+             link.lwd=2.0)
+circos.track(track.index = 1, panel.fun = function(x, y) {
+    circos.text(CELL_META$xcenter, CELL_META$ylim[1], CELL_META$sector.index,
+        facing = "clockwise", niceFacing = TRUE, adj = c(0, 0.5), cex = 1.25)
+}, bg.border = NA) # here set bg.border to NA is important
+
+circos.clear()
+# dev.off()
+```
+
+
+### BioCircos
+
+This works well but is a little too simple perhaps
+
+http://www.bioconductor.org/packages//2.12/bioc/vignettes/ggbio/inst/doc/ggbio.pdf
+http://bioconductor.org/packages/release/bioc/vignettes/ggbio/inst/doc/ggbio.pdf
+
+```{r}
+# install.packages("BioCircos")
+library(BioCircos)
+library(RColorBrewer)
+library(scales)
+```
+
+```{r}
+colors <- rainbow(27)
+names(colors) <- paste0(breakpoint_pos$Fusion, "_", breakpoint_pos$Breakpoint)
+colors
+```
+
+```{r}
+tracklist <- BioCircosBackgroundTrack("myBackgroundTrack", minRadius = 0, maxRadius =1.0,
+  borderSize = 0, fillColors = "seashell")  
+
+for (i in 1:nrow(breakpoint_pos)){
+  
+  df <- breakpoint_pos[i,]
+  # x <- pull(breakpoint_pos, N)
+  # rs <- scales::rescale(x, to=c(0.5,2.0), from=c(1,162))
+  # rs <- round(rs[i],digits = 1)
+  # rs <- paste0(rs,"em")
+  
+  lab <- pull(df, Fusion)
+  if(grepl("PRRX1|DDX10", lab)){
+    pad=-40
+  }else{
+    pad=-60
+  }
+  # print(lab)
+  
+  
+  track <- BioCircosLinkTrack('NUP98_breakpoints',
+                               pull(df,links_chromosomes_1),
+                               pull(df,links_pos_1),
+                               pull(df,links_pos_1),
+                               pull(df,links_chromosomes_2),
+                               pull(df,links_pos_2),
+                               pull(df,links_pos_2),
+                               maxRadius = 1.0,
+                               width = "0.8em",
+                               # labels = lab,
+                               # labelSize = "0.5em",
+                               # labelPadding = pad,
+                               color=scales::alpha(rainbow(27)[i],alpha = 0.7))
+  tracklist <- tracklist + track
+  
+}
+
+# str(tracklist)
+
+BioCircos(tracklist,
+          genome = "hg19", 
+          yChr = FALSE,
+          zoom=FALSE,
+          genomeFillColor = rainbow(23),
+          genomeLabelTextSize="14pt",
+          genomeLabelDx=0,
+          genomeLabelDy = 20,
+          genomeTicksDisplay = TRUE, 
+          genomeTicksLen = 4, 
+          genomeTicksColor = "#000",
+          genomeTicksTextSize = "0.6em",
+          chrPad = 0.04, 
+          displayGenomeBorder = T)
+
+
+rm(tracklist)
+```
+
+
+
+### GGBio
+
+Not working at all - it cannot find the appropriate genomic location for some reason??
+
+```{r}
+suppressPackageStartupMessages(library(ggbio))
+```
+
+```{r}
+chrominfo <- read.delim("Grch37.lite_chrom_lengths.txt") %>%
+  rownames_to_column("chrom_full_name") %>%
+  separate(chrom_full_name, into = "chrom", sep="\\s",
+           remove=T,extra = "drop") %>%
+  dplyr::select(chrom, end=x)  %>% 
+  dplyr::filter(grepl("^[0-9X]",chrom))
+
+chrominfo
+# tail(chrominfo)
+# Grch37_chrom_ranges <- GRanges(seqnames=Rle(chrominfo$chrom),
+#                         ranges=IRanges(start=1,
+#                                        width=chrominfo$end))
+# seqlengths(Grch37_chrom_ranges) <- chrominfo$end #must have seq lengths to use in ggbio! 
+# Grch37_chrom_ranges
+
+# plotIdeogram(Grch37_chrom_ranges, "1", cytoband = T, xlabel = TRUE) #why arent there any cyto bands?
+
+```
+
+```{r}
+library(BSgenome.Hsapiens.UCSC.hg19)
+
+genome <- Seqinfo(
+  seqnames = seqnames(Hsapiens),
+  seqlengths = seqlengths(Hsapiens),
+  genome = "hg19")
+seqlevelsStyle(genome) <- "NCBI"
+chromosomes = as.character(c(seq(22), "X"))
+genome = genome[chromosomes]
+
+genome
+```
+
+```{r}
+genome.ranges = GRanges(
+  seqnames = seqnames(genome),
+  strand = "*",
+  ranges = IRanges(start = 1, width = seqlengths(genome)),
+  seqinfo = genome
+)
+genome.ranges
+```
+
+```{r}
+temp <- dplyr::filter(breakpoint_pos, Fusion.Category=="NSD1-NUP98", N==65)
+
+
+#create the GR object
+fusion_grA <- GRanges(seqnames = Rle(temp$links_chromosomes_1),
+                     ranges = IRanges(start=temp$links_pos_1, 
+                                      end=temp$links_pos_1))
+mcols(fusion_grA)$Fusion <- temp$Fusion.Category
+
+fusion_grB <- GRanges(seqnames = Rle(temp$links_chromosomes_2),
+                     ranges = IRanges(start=temp$links_pos_2, 
+                                      end=temp$links_pos_2))
+mcols(fusion_grB)$Fusion <- temp$Fusion.Category
+
+
+# fusion_grA
+# fusion_grB
+
+
+#reformat for ggbio
+ggbio_fusions <- fusion_grA
+ggbio_fusions$to.gr  <- fusion_grB
+
+
+genome.ranges[c(5,11)]
+ggbio_fusions
+
+```
+
+number of values supplied is not a sub-multiple of the number of values to be replaced
+                 
+```{r}
+
+p <- ggbio() +  #trackWidth = 10, buffer = 0, radius = 10
+  circle(genome.ranges, geom = "ideo", fill = "gray70") +
+  circle(genome.ranges, geom = "scale", size = 2) +
+  circle(genome.ranges, geom = "text", aes(label = seqnames),
+         vjust = -0.25, size = 4) +
+  circle(ggbio_fusions, geom = "link", linked.to = "to.gr", radius=23)
+
+
+p
+```
+
+
+Warning: Not a validObject(): no slot of name "elementType" for this object of class "GRanges"
+Warning: Not a validObject(): no slot of name "elementType" for this object of class "GRanges"
+Warning: Not a validObject(): no slot of name "elementType" for this object of class "GRanges"
+number of values supplied is not a sub-multiple of the number of values to be replaced
+
+```{r}
+data("CRC", package = "biovizBase")
+head(hg19sub)
+
+
+gr.crc1 <- crc.gr[values(crc.gr)$individual == "CRC-1"] 
+
+ggbio() + 
+circle(hg19sub, geom = "ideo", fill = "gray70") +
+circle(hg19sub, geom = "scale", size = 2) +
+circle(hg19sub, geom = "text", aes(label = seqnames), vjust = 0, size = 3) +
+circle(gr.crc1, geom = "link", linked.to = "to.gr", 
+         aes(color = rearrangements),
+         radius = 23)
+
+```
+
+
+
+
+
+
+
+##GO ontology of Fusion partners
+
+https://www.bioconductor.org/packages/3.3/bioc/vignettes/annotate/inst/doc/GOusage.pdf
+
+```{r}
+# BiocManager::install("GO.db")
+# library(GO.db)
+# library(msigdbr)
+```
+
+DNA binding GO terms 
+
+
+```{r}
+nup.goslim <- read.csv("NUP98/Ensembl_v101_Biomart_NUP98_Genes_GO_SLIM.txt")
+head(nup.goslim)
+
+# unique(nup.goslim$Gene.name)
+```
+
+
+```{r}
+nup.goslim_cats <- nup.goslim %>% 
+  group_by(GOSlim.GOA.Accession.s.) %>% 
+  mutate(Num_Genes_in_GO=n(), 
+         Genes_Sharing_Term=paste(Gene.name, collapse="; ")) %>%
+  ungroup() %>% 
+  arrange(desc(Num_Genes_in_GO)) %>% 
+  dplyr::select(GOSlim.GOA.Accession.s.,GOSlim.GOA.Description,Num_Genes_in_GO,Genes_Sharing_Term) %>% 
+  distinct() %>% 
+  dplyr::filter(Num_Genes_in_GO>1)
+
+# write.csv(nup.goslim_cats,"NUP98/TARGET_AML_NUP98_partners_GoSlim_Categories.csv", row.names = FALSE)
+```
+
+
+
+
+#Session Information
+
+```{r}
+sessionInfo()
+```
+
+
+# Old Code
+
+NUP98.primary.groups.clean  <- nup.primary.breakpt.group %>% 
+  mutate(USI=str_split_fixed(Sample,"\\.", n=5)[,3]) %>% 
+  left_join(., NUP98.grps, by=c("USI")) %>% 
+  
+  #Ensure NUP98 Exon junction is first
+  mutate(Fusion_Exons=case_when(
+    geneA == "NUP98" & !is.na(exon_rankA) & !is.na(exon_rankB) ~ paste(exon_rankA,exon_rankB, sep="_"), 
+    geneB == "NUP98" & !is.na(exon_rankB) & !is.na(exon_rankA) ~ paste(exon_rankB,exon_rankA, sep="_"), 
+    
+    geneA == "NUP98" & is.na(exon_rankA) & !is.na(exon_rankB) ~ paste(intron_rankA, exon_rankB, sep="_"),
+    geneB == "NUP98" & is.na(exon_rankB) & !is.na(exon_rankA) ~ paste(intron_rankB, exon_rankA, sep="_")
+  )) %>% 
+  
+  mutate(NUP98_Exons=case_when(
+    geneA == "NUP98" & !is.na(exon_rankA) ~ paste0("Exon", exon_rankA),
+    geneB == "NUP98" & !is.na(exon_rankB) ~ paste0("Exon", exon_rankB),
+    geneA == "NUP98" & is.na(exon_rankA) ~ as.character(intron_rankA),
+    geneB == "NUP98" & is.na(exon_rankB) ~ as.character(intron_rankB))) %>% 
+  
+  group_by(Fusion,Exons) %>%
+  mutate(Fusion_Exon_Group=case_when(
+    n() >= 5 ~ paste0("Exon",Exons),
+    n() < 5 & !grepl("KDM5A|NSD1",Fusion) ~ "NUP98-X",
+    n() < 5 ~ "Other_Exons")) %>%
+  ungroup() %>%
+
+  group_by(NUP98.Rearranged.Groups, NUP98_Exons) %>%
+  mutate(NUP98_Exon_Group=case_when(
+    n() >= 5 ~ NUP98_Exons,
+    n() < 5 ~ "Other_Exons"
+  )) %>% 
+  ungroup() %>% 
+  dplyr::select(Sample,NUP98.Rearranged.Groups,NUP98.Rearranged,
+         Breakpoint,Breakpoint_Order, 
+         Fusion_Exons,NUP98_Exons, everything(),
+         -keep) %>% 
+  arrange(desc(NUP98.Rearranged.Groups), breakpoint_comparison)
+
+

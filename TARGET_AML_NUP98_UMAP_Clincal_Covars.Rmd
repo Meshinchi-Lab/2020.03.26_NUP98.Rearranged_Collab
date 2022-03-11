@@ -1,0 +1,242 @@
+---
+title: "NUP98 Transcriptional Profiling"
+author: "Jenny Smith"
+date: "7/20/20"
+output: html_document
+---
+
+
+
+#Set-up
+
+```{r setup, cache = FALSE, include = FALSE}
+require(knitr)
+knitr::opts_knit$set(root.dir = file.path(PROJHOME,"2020.03.26_NUP98.Rearranged_Collab"))
+```
+
+```{r}
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),
+                      tidy=TRUE,
+                      fig.align='center',
+                      fig.width = 10, fig.height = 10)
+options(stringsAsFactors = FALSE,bitmapType = 'cairo')
+grDevices::X11.options(type='cairo')
+```
+
+```{r}
+library(tidyr)
+library(tibble)
+library(dplyr)
+library(magrittr)
+library(compareGroups)
+library(ggplot2)
+```
+
+
+```{r}
+source(file.path(SCRIPTS,"survival_analysis/Survplot_Functions_2018.10.24.r"))
+source(file.path(SCRIPTS,"RNAseq_Analysis/Analysis/UMAP_Clustering/UMAP_workflow.R"))
+```
+
+
+#Read in the Clinical Data
+
+See the clinical data analysis folder and R code for how TARGET_AML_NUP98.rearranged_Cleaned_CDEs_7.15.2020.csv was created. 
+
+```{r}
+CDEs <- read.csv("TARGET_AML_NUP98.rearranged_Cleaned_CDEs_7.15.2020.csv",
+                   na.strings = c("N/A","#N/A","NA","^$", "^\\.$"))
+
+dim(CDEs)
+```
+
+```{r}
+table(CDEs$NUP98.Rearranged.Groups, useNA='ifany')
+```
+
+```{r}
+sample_info <- read.csv("TARGET_AML_NUP98.rearranged_Cleaned_RBD_Manifest_7.15.2020.csv") %>% 
+  mutate_at(vars(AML_Subtype), 
+            ~ifelse(NUP98.Rearranged.Groups=="NUP98-X", "NUP98-X", .)) %>%
+  left_join(., select(CDEs,USI, matches("Age|^OS|^EFS|event|time|mutation|M7_AML"),
+                      FLT3.ITD.positive.), by=c("USI")) %>% 
+  mutate_at(vars(Mutations.Category, Age.Category,M7_AML), ~ifelse(is.na(.), Group, .)) %>%
+  mutate(Age.Category=factor(Age.Category, levels=c("Less than 3 years",
+                                                    "Between 3 and 5 years",
+                                                    "Between 5 and 10 years",
+                                                    "Between 10 and 18 years",
+                                                    "Greater than 18 years",
+                                                    "Unknown",
+                                                    "NBM", 
+                                                    "CD34_PB"))) %>%
+  set_rownames(.$Sample)
+
+dim(sample_info) #1977   37
+# head(sample_info)
+```
+
+```{r fig.height=3}
+Cols <- c("NUP98.Rearranged.Groups", "Group",
+          "AML_Subtype","Mutations.Category",
+          "Batch","Time_point","Tissue",
+          "Age.Category","M7_AML",
+          "Protocol")
+
+
+cc <- readRDS("UMAP/NUP98_Only/UMAP_NUP98_ColorCodes_8.01.20.RDS")
+
+barplot(rep(1, length(cc$NUP98.Rearranged.Groups)), 
+        col=cc$NUP98.Rearranged.Groups, names.arg = names(cc$NUP98.Rearranged.Groups),
+        las=2)
+```
+
+
+# Read in the UMAP results 
+
+```{r}
+sample_info_NUP98 <- sample_info %>% 
+  filter(NUP98.Rearranged.Groups != "OtherAML",
+         Time_point=="diagnostic",
+         !grepl("replicate", Sample))
+
+dim(sample_info_NUP98)
+```
+
+
+```{r}
+umap_NUP98log <- readRDS("UMAP/NUP98_Only/TARGET_AML_sg8780_NUP98.Rearr_log2Counts_UMAP_NUP98_Results_7.16.20.RDS")
+
+#update clinical covars
+umap_NUP98log$umap_res <- umap_NUP98log$umap_res %>% 
+  left_join(.,select(sample_info_NUP98, Sample,USI, M7_AML,FLT3.ITD.positive.),
+            by="USI")
+
+#update scatter plots 
+umap_NUP98log$umap_2D_scatter <- scatter_plots_2d(umap_df = umap_NUP98log$umap_res,
+                                                  Columns = Cols, 
+                                                  ColorCodes = cc)
+
+
+
+umap_NUP98log$Num_PCs
+length(umap_NUP98log$input_features)
+sapply(umap_NUP98log$umap_res %>% select(matches("^cluster")), table, useNA='ifany')
+# write.csv(umap_NUP98log$umap_res, "UMAP/NUP98_Only/TARGET_AML_NUP98.R_only_sg8780.csv",row.names = F)
+```
+
+
+###Cluster Clinical Covar Tables
+
+```{r}
+library(compareGroups)
+```
+
+```{r}
+dat <- umap_NUP98log$umap_res %>%
+  # filter(cluster_k5 == 4 | cluster_k5 == 5 ) %>%
+  # filter(cluster_k5 == 1 | cluster_k5 == 2 ) %>%
+  select(cluster_k5, NUP98.Rearranged.Groups,
+         Protocol,Batch,Tissue,M7_AML, 
+         Age.in.years:CBL.Mutation, FLT3.ITD.positive., Mutations.Category, 
+         Age.Category,OS.event.ID, EFS.event.type.ID) %>% 
+    mutate_if(is.character, ~case_when(
+    .=="Unknown" ~ NA_character_,
+    .=="unknown" ~ NA_character_,
+    .=="Not reported" ~ NA_character_,
+    .=="<0.1" ~ NA_character_,
+    grepl("^\\.$", .) ~ NA_character_,
+    TRUE ~ .))   %>% 
+  mutate(Triple_positive=case_when(
+    Mutations.Category=="FLT3.ITD/WT1.mutation." & NUP98.Rearranged.Groups == "NUP98-NSD1" ~ "Yes", 
+    Mutations.Category=="Unknown" ~ NA_character_,
+    TRUE ~ "No")) %>% 
+  mutate(FLT3.WT1=case_when(
+    Mutations.Category=="FLT3.ITD/WT1.mutation."  ~ "Yes", 
+    Mutations.Category=="Unknown" ~ NA_character_,
+    TRUE ~ "No")) 
+
+
+# saveRDS(dat,"UMAP/NUP98_Only/TARGET_AML_NUP98.R_UMAP_CDEs_for_ClinChars.RDS")
+
+```
+
+```{r}
+NUP98.comp <- compareGroups(
+                        formula = cluster_k5 ~ .,
+                        data = dat,
+                        method = 4,
+                        max.ylev = 7,
+                        max.xlev = 10,
+                        Q1 = 0,
+                        Q3 = 1,
+                        ref = 1,
+                        p.corrected = TRUE,
+                        include.miss = FALSE)
+
+NUP98.tab <- createTable(NUP98.comp)
+
+# export2csv(NUP98.tab,"UMAP/NUP98_Only/TARGET_AML_NUP98_C4_vs_C5_UMAP_Clustering_Clinical_Table.csv")
+```
+
+```{r}
+umap_NUP98log$umap_res %>% 
+  mutate(HOX.partner=ifelse(grepl("HOX", NUP98.Rearranged), "Yes","No")) %>% 
+  group_by(cluster_k5, NUP98.Rearranged, HOX.partner) %>% 
+  summarise(N=n()) %>% 
+  ungroup() %>% 
+  
+  group_by(cluster_k5) %>%
+  arrange(cluster_k5,HOX.partner,NUP98.Rearranged) %>%
+  ungroup() %>% 
+  
+  View()
+```
+
+```{r}
+umap_NUP98log$umap_res %>% 
+  group_by(cluster_k5, NUP98.Rearranged.Groups, Age.Category) %>% 
+  summarise(N=n()) %>% 
+  ungroup() %>% 
+  
+  group_by(cluster_k5) %>%
+  arrange(cluster_k5,Age.Category,NUP98.Rearranged.Groups) %>%
+  ungroup() %>% 
+  
+  View()
+```
+
+```{r}
+M7_vs_Clust <- umap_NUP98log$umap_res %>% 
+  group_by(cluster_k5, NUP98.Rearranged, M7_AML) %>% 
+  summarise(N=n()) %>% 
+  ungroup() %>% 
+  
+  group_by(cluster_k5) %>%
+  arrange(cluster_k5,M7_AML,NUP98.Rearranged) %>%
+  ungroup() 
+
+
+# filter(M7_vs_Clust, NUP98.Rearranged.Groups=="NUP98-X")
+View(M7_vs_Clust)
+```
+
+```{r}
+outcome_table(fit=KM$OS.fit[[1]], time = 5)
+```
+
+```{r fig.width=12, fig.height=7}
+
+KM <- KM.plots(df=umap_NUP98log$umap_res,group_vars = NULL,
+               covariate ="cluster_k5",type = "OS",cohort = "1031")
+
+grid.arrange(grobs=c(KM$OS, KM$EFS), ncol=2)
+```
+
+
+
+#Session Information
+
+```{r}
+sessionInfo()
+```
+

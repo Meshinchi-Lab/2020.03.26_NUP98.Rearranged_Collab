@@ -1,0 +1,531 @@
+---
+title: "DE Analysis/GSVA  of Ribodepleted RNA-seq"
+author: "Jenny Smith"
+date: "6/20/20"
+output: html_document
+---
+
+
+#Set-up
+
+```{r setup, cache = FALSE, include = FALSE}
+require(knitr)
+knitr::opts_knit$set(root.dir = file.path(PROJHOME,"2020.03.26_NUP98.Rearranged_Collab"))
+```
+
+```{r}
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),
+                      tidy=TRUE,
+                      fig.align='center',
+                      fig.width = 10, fig.height = 10)
+node=Sys.info()[["nodename"]]
+if(!grepl("local", node)){
+  print(node)
+  options(bitmapType = 'cairo')
+  grDevices::X11.options(type='cairo')
+}
+
+options(stringsAsFactors = FALSE, useNA='always')
+table = function (..., useNA = 'ifany') base::table(..., useNA = useNA)
+```
+
+```{r message=FALSE}
+# library(ggVennDiagram)
+library(ggplot2)
+library(ggrepel)
+library(RColorBrewer)
+library(gridExtra)
+library(ggpubr)
+
+library(readr)
+library(dplyr)
+library(magrittr)
+library(tibble)
+library(tidyr)
+library(data.table)
+library(stringr)
+library(readr)
+
+
+library(tools)
+library(gtools)
+
+
+library(edgeR)
+library(DeGSEA)
+getwd()
+```
+
+
+
+#Read in the Clinical Data
+
+See the clinical data analysis folder and R code for how TARGET_AML_NUP98.rearranged_Cleaned_CDEs_7.15.2020.csv was created. 
+
+```{r}
+# NUP98.cohort <- read.csv("00_Archive/TARGET_AML_NUP98.rearranged_Cleaned_Groups_REG_7.15.2020.csv") 
+NUP98.cohort <- read.csv("TARGET_AML_NUP98.rearranged_Cleaned_Groups_REG_10.26.2020.csv") %>% 
+  mutate(Reg.=as.character(Reg.)) %>% 
+  select(-USI)
+
+
+# head(NUP98.cohort)
+dim(NUP98.cohort) #2304    4
+```
+
+```{r}
+nup.ineligable <- read.csv("nup98x_notincohort.csv") %>% 
+  # openxlsx::read.xlsx("nup98x_notincohort.xlsx") %>% 
+  filter(!Not_in == "") %>% 
+  arrange(Reg_NO)
+
+dim(nup.ineligable)
+```
+
+```{r}
+chr13 <- read.csv(file.path(CDE, "Merged/00_Old/TARGET_AML_0531_1031_merged_CDEs_05.01.21.csv"),
+                    na.strings = c("N/A","#N/A","NA","^$", "^\\.$")) %>% 
+  select(matches("Reg.|chr13|_13"))
+
+
+dim(chr13)
+# chr13
+```
+
+```{r}
+exon_juncs <- read.csv("NUP98_Fusions/Exon_Juncs/TARGET_AML_NUP98_fusion_exons_3.20.21.csv") %>% 
+  filter(!grepl("replicate", Sample))
+
+dim(exon_juncs)
+# head(exon_juncs)
+```
+
+```{r}
+merged <- read.csv(file.path(CDE, "Merged/TARGET_AML_0531_1031_merged_CDEs_05.21.21.csv"), 
+                    na.strings = c("N/A","#N/A","NA","^$", "^\\.$")) %>% 
+  left_join(., chr13, by="Reg.")
+
+inelig <- merged %>% 
+  filter(Eligibility_Comments == "remove") %>% 
+  pull(USI)
+
+# head(merged)
+dim(merged) 
+```
+
+
+```{r}
+CDEs <- merged %>% 
+  filter(Eligibility_Comments != "remove") %>% 
+  mutate(Reg.=as.character(Reg.)) %>%
+  inner_join(., NUP98.cohort,
+             by="Reg.") %>%  
+  left_join(., select(exon_juncs,-c(NUP98.Rearranged.Groups:NUP98.Rearranged), -Reg., -FIX),
+            by="USI") %>% 
+  mutate(CNS.Disease.Harmonized=case_when(
+    grepl("CNS[12]", CNS.disease.at.on.study) ~ "No",
+    grepl("CNS3", CNS.disease.at.on.study) ~ "Yes",
+    grepl("Yes|No", CNS.disease) ~ CNS.disease,
+    TRUE ~ "Unknown")) %>% 
+  
+  #For this analysis include <0.1 AR are FLT3-ITD positive 
+  mutate_at(vars(FLT3.ITD.positive.), ~gsub("<0.1", "Yes", .)) %>% 
+  mutate(Any_chr13_Abnormality=case_when(
+                  !is.na(deletion_chr13)  | !is.na(translocation_13) ~ "chr13_Abnormality", 
+                  grepl("monosomy13", monosomy_trisomy_13) ~ "chr13_Abnormality",
+                  ISCN=="Unknown" ~ "Unknown",
+                  TRUE ~ "None"), 
+         Any_chr13_Deletion=case_when(
+           !is.na(deletion_chr13) ~ "chr13_deletion",
+           ISCN=="Unknown" ~ "Unknown",
+           TRUE ~ "None"),
+         Any_chr13_CNV=case_when(
+           !is.na(deletion_chr13) | !is.na(monosomy_trisomy_13) ~ "chr13_CNV",
+           ISCN=="Unknown" ~ "Unknown",
+           TRUE ~ "None")) %>% 
+  mutate(deletion_chr13_groups=case_when(
+              ISCN == "Unknown" ~ "Unknown",
+              is.na(deletion_chr13) ~ "OtherAML",
+              TRUE ~ "del(13)")) %>% 
+  mutate(monosomy_trisomy_13_groups=case_when(
+              ISCN == "Unknown" ~ "Unknown",
+              is.na(monosomy_trisomy_13) ~ "OtherAML",
+              TRUE ~ as.character(monosomy_trisomy_13))) %>% 
+  mutate(translocation_13_groups=case_when(
+              ISCN == "Unknown" ~ "Unknown",
+              is.na(translocation_13) ~ "OtherAML",
+              TRUE ~ "t(13;X)")) 
+
+dim(CDEs) #2296  198
+table(CDEs$NUP98.Rearranged.Groups, useNA='ifany')
+```
+
+
+# Define Samples 
+
+```{r}
+umap_clusters <- read.csv("UMAP/NUP98_Only/TARGET_AML_NUP98.R_only_sg8780.csv")
+
+# table(umap_clusters$cluster_k5)
+colorcodes_fromUMAP <- readRDS("UMAP/NUP98_Only/UMAP_NUP98_ColorCodes_8.01.20.RDS")
+```
+
+```{r}
+cols.colorbar <- c("Age.Category","Cytogenetic.Category.1","Cytogenetic.Category.2", "SNVs","Rare.Fusions")
+
+
+sample_info <- read.csv(file.path(TARGET, "SequencingDataMatrix/00_archive/TARGET_AML_Ribodepleted_Manifest_10.08.20.csv"))  %>%   
+  left_join(.,  dplyr::select(umap_clusters, Sample, cluster_k5,x,y,z),
+            by="Sample") %>%
+  left_join(., dplyr::select(CDEs,USI,Reg., 
+                             NUP98.Rearranged.Groups, NUP98.Rearranged,NUP98_Exons,
+                      Sex, matches("Age|^OS|^EFS|event|time|mutation|M7_AML|M6_AML"),
+                      Mutations.Category, SNVs,
+                      matches("FLT3|WT1|FAB|ETS_Fusion"),
+                      one_of(cols.colorbar), Eligibility_Comments,
+                      ISCN,matches("chr13|_13")),
+            by=c("USI")) %>%
+  
+
+  select(-Reg.) %>% 
+  mutate_at(vars(NUP98.Rearranged.Groups),   ~ifelse(is.na(.), Group, .)) %>% 
+  mutate_at(vars(AML_Subtype),
+            ~ifelse(NUP98.Rearranged.Groups=="NUP98-X", "NUP98-X", .)) %>%
+  mutate_at(vars(matches("Any_chr13")), ~case_when(
+    Group == "AML" & is.na(.) ~ "Unknown",
+    Group != "AML" &is.na(.)  ~ Group,
+    TRUE ~ .)) %>% 
+
+
+  mutate_at(vars(cluster_k5), ~as.factor(.)) %>%
+  mutate_at(vars(Mutations.Category, Age.Category,
+                 NUP98.Rearranged.Groups, M7_AML), ~ifelse(is.na(.), Group, .)) %>%
+  mutate_at(vars(Age.Category), ~case_when(
+    grepl("5", .) ~ "Between 3 and 10 years", 
+    grepl("18", .) ~ "Greater than 10 years", 
+    TRUE ~ .)) %>% 
+  
+  mutate(NUP98.Rearranged.Groups.Addl=case_when(
+    grepl("NUP98", NUP98.Rearranged.Groups) ~ NUP98.Rearranged.Groups,
+    grepl("DEK-NUP214|KMT2A", AML_Subtype) ~ AML_Subtype,
+    # grepl("HOX", Primary.Fusion) ~ Primary.Fusion, #5 other HOX fusions
+    grepl("Yes", NPM.mutation.) ~ "NPM1",
+    TRUE ~ NUP98.Rearranged.Groups)) %>% 
+  
+  set_rownames(.$Sample)
+
+dim(sample_info) #2646   45
+# head(sample_info)
+
+
+
+#removing TARGET.20.PAXLWH.CD34NEG.01R and other associated experimenal samples for DE analysis
+samps_all <- filter(sample_info,
+                (USI %in% CDEs$USI | Group == "NBM"),
+                !Group %in% c("CellLine","FlowSorted",
+                              "DS", "TMD", "MPN", "CD34_PB"), #CD34-PB should be its own analysis
+                !grepl("replicate", Sample, ignore.case = T),
+                !grepl("relapse|remission", Time_point, ignore.case = T), # dont include relapses here
+                !grepl("TARGET.20.PAXLWH\\.[A-Z]",Sample)) %>%
+  mutate(Age.Category=factor(Age.Category, levels=c("Less than 3 years",
+                                                    "Between 3 and 10 years",
+                                                    "Greater than 10 years",
+                                                    "Unknown",
+                                                    "NBM")))
+
+
+dim(samps_all)
+table(samps_all$NUP98.Rearranged.Groups)
+```
+
+```{r}
+#removing TARGET.20.PAXLWH.CD34NEG.01R and other associated experimenal samples
+samps_NUP98 <- filter(samps_all,
+                grepl("NUP98", NUP98.Rearranged.Groups),
+                !grepl("FlowSorted",Group),
+                !grepl("replicate", Sample, ignore.case = T),
+                !grepl("relapse|remission", Time_point, ignore.case = T), # dont include relapses here
+                !grepl("TARGET.20.PAXLWH\\.[A-Z]",Sample)) %>%
+  droplevels() %>% 
+  set_rownames(.$Sample)
+
+table(samps_NUP98$NUP98.Rearranged.Groups)
+# NUP98-KDM5A  NUP98-NSD1     NUP98-X 
+#          32         104          20
+
+# table(samps_NUP98$Age.Category)
+# table(samps_NUP98$AML_Subtype, samps_NUP98$NUP98.Rearranged.Groups)
+# length(unique(samps_NUP98$Sample))
+# dim(samps_NUP98)
+```
+
+
+# Read in the RNAindel Data 
+
+```{r}
+fastq_rename_log <-  read.csv(file.path(TARGET,"SequencingDataMatrix/Fastq_manifests/TARGET_AML_RBD_PolyA_AWS_S3_Fastq_Rename_Log_11.18.20.csv")) %>% 
+  mutate(RNAindel_Sample_orig=gsub("^.+picard_fq2\\/([A-Za-z].+)_[Rr][12].f.+$","\\1",  orignial_fastq_filename), 
+         RNAindel_Sample_final=gsub("_[Rr][12].f.+$","",  final_fastq_filename), 
+         USI=gsub("^TARGET.[0-9]{2}.", "", Sample)) %>% 
+  mutate(USI=str_split_fixed(USI, "\\.", n=2)[,1]) %>% 
+  filter(grepl("[Rr]1.f", orignial_fastq_filename)) %>% 
+  select(Sample,RNAindel_Sample_orig,RNAindel_Sample_final, USI, everything()) 
+
+# dim(fastq_rename_log) #2834    7
+# head(fastq_rename_log)
+```
+
+```{r}
+fastq_manifest <- read.csv(file.path(TARGET,"SequencingDataMatrix/Fastq_manifests/TARGET_AML_RNAseq_Fastq_File_Manifest_08.11.21.csv")) %>% 
+  left_join(.,select(CDEs, USI, NUP98.Rearranged.Groups, FLT3.ITD.positive., FLT3.ITD.allelic.ratio, 
+                     MRD...at.end.of.course.1, MRD...at.end.of.course.2),
+            by="USI" ) %>% 
+  mutate(RNAindel_Sample=gsub("_[Rr]1.f.+$","", Read1)) 
+
+# head(fastq_manifest)
+# dim(fastq_manifest)
+```
+
+```{r}
+path=file.path(TARGET,"RNA/mRNAseq/level2/SNVs/2022Jan_StJude_AML_DS_MPN_JMML_CleanDeepSeq_data")
+RNAindel <- openxlsx::read.xlsx(file.path(path, "SNVIndel_64_genes_Jan302022.xlsx"), sheet="ITD") %>% 
+  select(RNAindel_Sample=Sample, everything())
+
+# head(RNAindel)
+dim(RNAindel) #1306   11
+```
+
+```{r}
+# all(RNAindel$USI %in% fastq_manifest$USI) #TRUE 
+# length(unique(RNAindel$USI)) #504 patients
+# all(RNAindel$RNAindel_Sample %in% fastq_manifest$RNAindel_Sample)
+# table(RNAindel$RNAindel_Sample %in% fastq_manifest$RNAindel_Sample) #361 files not in the fastq manifest
+# table(fastq_manifest$USI %in% RNAindel$USI) #765 USI patients in the RNAindel for ITDs 
+
+missing <- RNAindel %>% 
+  filter(!RNAindel_Sample %in% fastq_manifest$RNAindel_Sample) %>% 
+  select(RNAindel_Sample, USI) %>% 
+  distinct() %>% 
+  arrange(USI) %>% 
+  left_join(., select(fastq_rename_log,-USI),
+            by=c("RNAindel_Sample"="RNAindel_Sample_orig"))
+
+table(missing$RNAindel_Sample %in% fastq_rename_log$RNAindel_Sample_orig) #TRUE
+# table(missing$RNAindel_Sample_final %in% included$RNAindel_Sample) #TRUE yep these were all renamed 
+table(missing$USI %in% included$USI) #TRUE All missing samples are infact accounted for in the included samples, so no need to rescue these
+
+# dim(missing)
+# length(unique(missing$USI)) #241 duplicated ... oof
+```
+
+
+```{r}
+included <- fastq_manifest %>% 
+  filter(USI %in% RNAindel$USI) %>%
+  select(RNAindel_Sample, everything()) %>% 
+  left_join(., select(RNAindel,-USI),
+            by="RNAindel_Sample")
+
+# included
+dim(included)
+length(unique(included$USI)) #504 USIs
+
+# table(included$NUP98.Rearranged.Groups)
+# write.csv(included, "RNAindel/TARGET_AML_RNAindel_ITDs_subset_of_SNVIndel_64_genes_Jan302022.csv", row.names = FALSE)
+```
+
+of those with NUP98-NSD1 with dx/rel, were there any that were negative at dx but positive at relapse?
+
+```{r}
+NSD1.FLT3.neg <- merged %>% 
+  filter(FLT3.ITD.positive. == "No" & Primary.Fusion=="NUP98-NSD1")
+
+dim(NSD1.FLT3.neg)
+# table(NSD1.FLT3.neg$USI %in% fastq_manifest$USI)
+# table(NSD1.FLT3.neg$USI %in% included$USI)
+
+included %>% 
+  filter(USI %in% NSD1.FLT3.neg$USI) %>% 
+  select(Sample, RNAindel_Sample, Time_point, matches("FLT3.ITD"), Gene, SV, nReads, matches("Pos"), 
+         everything())
+# NSD1.FLT3.neg %>% 
+```
+
+```{r}
+# I think we need to look at the exon annotation to narrow these down to true FLT3 ITDs.  I sorted the spreadsheet by exon and many map outside of exon13/14 – tons are in exon 1, etc.  One of the normal marrows maps outside of the true region, but one does seem to have an ITD, albeit read count is low – 3-4 reads
+NSD1 <- included %>% 
+  filter(NUP98.Rearranged.Groups=="NUP98-NSD1", 
+         Gene=="FLT3") %>% 
+  filter(Time_point != "AML") %>% 
+  group_by(USI) %>% 
+  mutate(Paired_Timepoint_Specimens=case_when(
+    any(grepl("diagnostic", Time_point)) & any(grepl("remission", Time_point)) & any(grepl("relapse", Time_point)) ~ "trio",
+    any(grepl("diagnostic", Time_point)) & any(grepl("relapse", Time_point)) ~ "duo", 
+    any(grepl("diagnostic", Time_point)) & any(grepl("remission", Time_point)) ~ "dx_rem",
+    any(grepl("diagnostic", Time_point)) ~ "dx_only",
+    any(grepl("relapse", Time_point)) ~ "rlps_only",
+    TRUE ~ Group,
+  )) %>% 
+  mutate(Hotspot_Hit=case_when(
+    grepl("E14|E15", PosA) ~ "Yes", 
+    TRUE ~ "No"
+  )) %>% 
+  ungroup() %>% 
+  select(Sample,RNAindel_Sample, USI, 
+         Paired_Timepoint_Specimens, Protocol, Time_point, 
+         Tissue,FLT3.ITD.allelic.ratio, FLT3.ITD.positive., Primary.Fusion,
+         Gene,Hotspot_Hit, AA_change,matches("Pos"), nReads,SV,Confidence, everything()) %>% 
+  arrange(USI)
+
+# head(NSD1)
+# dim(NSD1) #179 rows - could be more than 1 hit on the FLT3-ITD 
+# length(unique(NSD1$Sample)) #91 unique samples
+
+table(NSD1$Paired_Timepoint_Specimens)
+```
+
+```{r}
+library(dplyr)
+library(tibble)
+
+set.seed(1)
+mat <- matrix(runif(1e3,min=0, max=1e5),
+              nrow=100, ncol=10,
+              dimnames = list(paste0("gene",1:100), paste0("cell",1:10)))
+# mat
+#the dataframe in long-format
+df <- as.data.frame(mat) %>% 
+  rownames_to_column("gene") %>% 
+  pivot_longer(cols=matches("cell"),
+               names_to = "SampleID",
+               values_to="counts")
+
+# df
+```
+
+```{r}
+NSD1 %>% 
+  group_by(Sample, Hotspot_Hit) %>% 
+  dplyr::count() %>% 
+  ungroup() %>% 
+  pivot_wider()
+```
+
+```{r}
+NSD1 %>% 
+  filter(Time_point=="relapse") %>% 
+  select(USI, FLT3.ITD.allelic.ratio) %>% 
+  distinct() %>% 
+  group_by(FLT3.ITD.allelic.ratio) %>% 
+  dplyr::count()
+```
+
+```{r}
+duos <- NSD1 %>% 
+  filter(Paired_Timepoint_Specimens=="duo" | Paired_Timepoint_Specimens=="rlps_only") %>% 
+  arrange(Paired_Timepoint_Specimens,USI, Time_point)
+
+length(unique(duos$USI)) #8 unique samples (6 duos, and 2 rlps only)
+# write.csv(duos, "RNAindel/TARGET_AML_NUP98-NSD1_paired_dx_rlps_duos_RNAIndel_FLT3-ITD.csv", row.names = FALSE)
+```
+
+
+```{r}
+NSD1 %>% 
+  filter(Lib_Prep=="RBD") %>% 
+  group_by(NUP98.Rearranged.Groups, Time_point, Lib_Prep, Confidence) %>% 
+  dplyr::count()
+```
+
+
+# Read in the counts data
+
+```{r}
+updated.IDs <- read.csv(file.path(PROJHOME,
+                                  "0000.00.02_Reference_GeneInfo/GeneSymbol_Ensembl_ID_Conversion_GRCh37_v69_to_v102.csv")) %>%
+  rename_all(~c("gene_id","geneSymbol_Updated"))
+
+dim(updated.IDs) #57010     2
+# head(updated.IDs)
+```
+
+
+```{r}
+ID.map <- read.csv(file.path(PROJHOME,"0000.00.02_Reference_GeneInfo/GeneSymbol_Ensembl_ID_Conversion_GRCh37.69_FromBCCA.csv")) %>% 
+  left_join(.,updated.IDs, by= "gene_id")
+
+dim(ID.map) #58450     3
+head(ID.map)
+
+# filter(ID.map, geneSymbol != geneSymbol_Updated) %>%  dim() #6,235 genes have updated symbols. 
+# filter(ID.map, is.na(geneSymbol_Updated)) %>% dim() #1,440 genes dont have mapping to its ensembl ID.
+#   write.csv(., "Missing_Ensembl_IDs.csv", row.names = F)
+```
+
+```{r}
+
+cts <- readRDS(file.path(PROJHOME, "0000.00.03_ExpressionMatrices/BCCA_GRCh37_Ensembl_v69/TARGET_AML_MPN_DS_NBM_3044Samples_Ribodepleted_RNAseq_geneLevel_dupGenesRemoved_FractionalCounts.RDS"))
+
+# cts <- readRDS(file.path(PROJHOME, "0000.00.03_ExpressionMatrices/TARGET_AML_MPN_DS_NBM_2646Samples_Ribodepleted_RNAseq_geneLevel_dupGenesRemoved_FractionalCounts.RDS"))
+
+# cts <- readRDS(file.path("/fh/fast/meshinchi_s/workingDir/TARGET/AML_TARGET/RNA/mRNAseq/analysis/2019.12.31_UMAP_Clustering/Expression_Data/TARGET_AML_DSAML_MPN_NBM_Ribodepleted_dupGenesRemoved_Fractionalcounts.RDS"))
+
+cts <- as.data.frame(cts)
+gene_ids <- cts[,1:2]
+rownames(cts) <- cts$geneSymbol
+cts <- cts[,-c(1:2)]
+
+# head(cts[,1:5])
+dim(cts) #51573  3044
+```
+
+```{r}
+cts_all <- cts[, samps_all$Sample]
+dim(cts_all)  #51573  
+
+keep <- rowSums(cpm(cts_all) >= 1) >= 0.025*ncol(cts_all)
+cts.filtered <- cts_all[keep, ]
+
+dge <- DGEList(counts=cts.filtered)
+dge <- calcNormFactors(dge,method = "TMMwsp")
+
+CPM <- edgeR::cpm(dge,log=FALSE,normalized.lib.sizes=TRUE, prior.count=1)
+logCPM <- edgeR::cpm(dge,log=TRUE,normalized.lib.sizes=TRUE, prior.count=1)
+
+dim(logCPM)   #21136  1550
+# head(logCPM[,1:5])
+
+# write.csv(logCPM, "Expression_Data/TARGET_AML_NBM_NUP98.Rearranged_Project_BCCA_GeneLevel_log2_CPM.csv")
+```
+
+
+### TPM
+
+```{r}
+TPM <- readRDS(file.path(PROJHOME, "0000.00.03_ExpressionMatrices/BCCA_GRCh37_Ensembl_v69/TARGET_AML_MPN_DS_NBM_3044Samples_Ribodepleted_RNAseq_geneLevel_dupGenesRemoved_TPM.RDS"))
+
+# TPM <- readRDS(file.path(PROJHOME, "0000.00.03_ExpressionMatrices/TARGET_AML_MPN_DS_NBM_2646Samples_Ribodepleted_RNAseq_geneLevel_dupGenesRemoved_TPM.RDS"))
+
+TPM <- as.data.frame(TPM)
+gene_ids <- TPM[,c(1:2)]
+rownames(TPM) <- TPM$geneSymbol
+TPM <- TPM[,-c(1:2)]
+
+head(TPM[,1:5])
+dim(TPM) #51573 
+```
+
+```{r}
+TPM_all <- TPM[, samps_all$Sample]
+dim(TPM_all)  #51573  
+```
+
+
+
+
+# session info
+
+```{r}
+session_info()
+```
+
