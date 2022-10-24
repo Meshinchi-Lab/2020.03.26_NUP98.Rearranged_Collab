@@ -8,9 +8,10 @@ output: html_document
 
 #Set-up
 
+
 ```{r setup, cache = FALSE, include = FALSE}
 require(knitr)
-knitr::opts_knit$set(root.dir = file.path(PROJHOME,"2020.03.26_NUP98.Rearranged_Collab"))
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
 ```
 
 ```{r}
@@ -56,6 +57,30 @@ library(DeGSEA)
 getwd()
 ```
 
+
+```{r}
+# Define File/Data Locations
+host <- Sys.info()[["nodename"]]
+if(grepl("gizmo", host)){
+  FASTDRIVE <- "/fh/fast/meshinchi_s"
+}else{
+  FASTDRIVE <- "/Users/jsmi26/fast_drive" #/fh/fast/meshinchi_s on the Fred Hutch HPC
+}
+
+RPROJ <- list(PROJHOME=normalizePath(file.path(FASTDRIVE,"workingDir/TARGET/AML_TARGET/RNA/mRNAseq/analysis/")),
+              CDE=normalizePath(file.path(FASTDRIVE, "workingDir/TARGET/AML_TARGET/Clinical/CDE/")),
+              GENREFS=normalizePath(file.path(FASTDRIVE, "workingDir/TARGET/Reference_Data/")),
+              TARGET=normalizePath(file.path(FASTDRIVE, "workingDir/TARGET/AML_TARGET/")),
+              REFS=normalizePath(file.path(FASTDRIVE, "workingDir/0_For_Soheil/jlsmith3/reference_mapping-files/")),
+              HOME=normalizePath(file.path(FASTDRIVE,"workingDir/0_For_Soheil/jlsmith3/RNA_seq_Analysis/")),
+              SCRIPTS=normalizePath(file.path(FASTDRIVE,"workingDir/0_For_Soheil/jlsmith3/github_repos/")),
+              WORKINGDIR=normalizePath(file.path(FASTDRIVE,"workingDir/")))
+
+attach(RPROJ)
+rm(RPROJ)
+
+PROJHOME <- file.path(PROJHOME,"2020.03.26_NUP98.Rearranged_Collab")
+```
 
 #Define Functions
 
@@ -259,7 +284,7 @@ See the clinical data analysis folder and R code for how TARGET_AML_NUP98.rearra
 
 ```{r}
 # NUP98.cohort <- read.csv("00_Archive/TARGET_AML_NUP98.rearranged_Cleaned_Groups_REG_7.15.2020.csv") 
-NUP98.cohort <- read.csv("TARGET_AML_NUP98.rearranged_Cleaned_Groups_REG_10.26.2020.csv") %>% 
+NUP98.cohort <- read.csv(file.path(PROJHOME, "TARGET_AML_NUP98.rearranged_Cleaned_Groups_REG_10.26.2020.csv")) %>% 
   mutate(Reg.=as.character(Reg.)) %>% 
   select(-USI)
 
@@ -269,8 +294,7 @@ dim(NUP98.cohort) #2304    4
 ```
 
 ```{r}
-nup.ineligable <- read.csv("nup98x_notincohort.csv") %>% 
-  # openxlsx::read.xlsx("nup98x_notincohort.xlsx") %>% 
+nup.ineligable <- read.csv(file.path(PROJHOME,"nup98x_notincohort.csv")) %>% 
   filter(!Not_in == "") %>% 
   arrange(Reg_NO)
 
@@ -288,7 +312,7 @@ dim(chr13)
 ```
 
 ```{r}
-exon_juncs <- read.csv("NUP98_Fusions/Exon_Juncs/TARGET_AML_NUP98_fusion_exons_3.20.21.csv") %>% 
+exon_juncs <- read.csv(file.path(PROJHOME,"NUP98_Fusions/Exon_Juncs/TARGET_AML_NUP98_fusion_exons_3.20.21.csv")) %>% 
   filter(!grepl("replicate", Sample))
 
 dim(exon_juncs)
@@ -308,14 +332,13 @@ inelig <- merged %>%
 dim(merged) 
 ```
 
-
 ```{r}
 CDEs <- merged %>% 
   filter(Eligibility_Comments != "remove") %>% 
   mutate(Reg.=as.character(Reg.)) %>%
   inner_join(., NUP98.cohort,
              by="Reg.") %>%  
-  left_join(., select(exon_juncs,-c(NUP98.Rearranged.Groups:NUP98.Rearranged), -Reg., -FIX),
+  left_join(., select(exon_juncs, -c(NUP98.Rearranged.Groups:NUP98.Rearranged), -Reg., -FIX),
             by="USI") %>% 
   mutate(CNS.Disease.Harmonized=case_when(
     grepl("CNS[12]", CNS.disease.at.on.study) ~ "No",
@@ -355,69 +378,13 @@ dim(CDEs) #2296  198
 table(CDEs$NUP98.Rearranged.Groups, useNA='ifany')
 ```
 
-
-```{r}
-forTim <- CDEs %>% 
-  select(USI,matches("_chr13|_13"))
-
-# head(forTim)
-# table(forTim$Any_chr13_Abnormality, forTim$monosomy_trisomy_13)
-# write.csv(forTim,"TARGET_AML_chr13_abnormalities_by_Karyotype_allPatients_08.30.21.csv", row.names = FALSE)
-```
-
-```{r}
-# CDEs %>% 
-#   filter(Any_chr13_Abnormality=="chr13_Abnormality", !grepl("NUP98", NUP98.Rearranged.Groups)) %>% 
-#   group_by(Primary.Fusion) %>% 
-#   count() %>% 
-#   arrange(desc(n))
-# 
-# CDEs %>% 
-#   filter(Any_chr13_Abnormality=="chr13_Abnormality", !grepl("NUP98", NUP98.Rearranged.Groups)) %>% 
-#   mutate(KMT2A=ifelse(grepl("KMT2A", Primary.Fusion), "KMT2A", "")) %>% 
-#   group_by(KMT2A) %>% 
-#   count() %>% 
-#   arrange(desc(n))
-# 
-# 
-# CDEs %>% 
-#   filter(Any_chr13_Abnormality=="chr13_Abnormality", !grepl("NUP98", NUP98.Rearranged.Groups)) %>% 
-#   group_by(M7_AML) %>% 
-#   count() %>% 
-#   arrange(desc(n))
-```
-
-There are 12/47 KMT2A (25.5%), 8/47 (17.0%) RUNX1-RUNX1T1 with chr13 alterations and Non-NUP98 translocated
-
-```{r}
-# #file.path(CDE, "Merged/00_Old/TARGET_AML_0531_1031_merged_CDEs_03.17.21.csv")
-# CDEs <- read.csv(file.path(CDE, "Merged/TARGET_AML_0531_1031_merged_CDEs_05.21.21.csv"),
-#                    na.strings = c("N/A","#N/A","NA","^$", "^\\.$")) %>% 
-#   mutate(Reg.=as.character(Reg.)) %>% 
-#   inner_join(., mutate(NUP98.cohort, Reg.=as.character(Reg.)) %>% 
-#                select(-USI),
-#              by="Reg.") %>% 
-#   filter(Eligibility_Comments != "remove")
-# 
-# 
-# 
-# # CDEs <- read.csv("TARGET_AML_NUP98.rearranged_Cleaned_CDEs_7.15.2020.csv",
-# #                    na.strings = c("N/A","#N/A","NA","^$", "^\\.$"))
-# 
-# dim(CDEs)  #2296  152
-```
-
-
-
-
-
 # Define Samples 
 
 ```{r}
-umap_clusters <- read.csv("UMAP/NUP98_Only/TARGET_AML_NUP98.R_only_sg8780.csv")
+umap_clusters <- read.csv(file.path(PROJHOME, "UMAP/NUP98_Only/TARGET_AML_NUP98.R_only_sg8780.csv"))
 
 table(umap_clusters$cluster_k5)
-colorcodes_fromUMAP <- readRDS("UMAP/NUP98_Only/UMAP_NUP98_ColorCodes_8.01.20.RDS")
+colorcodes_fromUMAP <- readRDS(file.path(PROJHOME,"UMAP/NUP98_Only/UMAP_NUP98_ColorCodes_8.01.20.RDS"))
 ```
 
 ```{r}
@@ -494,7 +461,6 @@ samps_all <- filter(sample_info,
 # table(samps_all$monosomy_trisomy_13_groups, samps_all$Any_chr13_Abnormality)
 # table(samps_all$Any_chr13_Abnormality, samps_all$NUP98.Rearranged.Groups)
 table(samps_all$Time_point)
-
 ```
 
 ```{r}
@@ -574,7 +540,7 @@ XvsNUPs <-  sample_info[samps_all$Sample, ] %>%
 # Read in the counts data
 
 ```{r}
-updated.IDs <- read.csv(file.path(PROJHOME,
+updated.IDs <- read.csv(file.path(dirname(PROJHOME),
                                   "0000.00.02_Reference_GeneInfo/GeneSymbol_Ensembl_ID_Conversion_GRCh37_v69_to_v102.csv")) %>%
   rename_all(~c("gene_id","geneSymbol_Updated"))
 
@@ -584,7 +550,8 @@ dim(updated.IDs) #57010     2
 
 
 ```{r}
-ID.map <- read.csv(file.path(PROJHOME,"0000.00.02_Reference_GeneInfo/GeneSymbol_Ensembl_ID_Conversion_GRCh37.69_FromBCCA.csv")) %>% 
+ID.map <- read.csv(file.path(dirname(PROJHOME),
+                             "0000.00.02_Reference_GeneInfo/GeneSymbol_Ensembl_ID_Conversion_GRCh37.69_FromBCCA.csv")) %>% 
   left_join(.,updated.IDs, by= "gene_id")
 
 dim(ID.map) #58450     3
@@ -597,7 +564,8 @@ head(ID.map)
 
 ```{r}
 
-cts <- readRDS(file.path(PROJHOME, "0000.00.03_ExpressionMatrices/BCCA_GRCh37_Ensembl_v69/TARGET_AML_MPN_DS_NBM_3044Samples_Ribodepleted_RNAseq_geneLevel_dupGenesRemoved_FractionalCounts.RDS"))
+cts <- readRDS(file.path(dirname(PROJHOME),
+                         "0000.00.03_ExpressionMatrices/BCCA_GRCh37_Ensembl_v69/TARGET_AML_MPN_DS_NBM_3044Samples_Ribodepleted_RNAseq_geneLevel_dupGenesRemoved_FractionalCounts.RDS"))
 
 # cts <- readRDS(file.path(PROJHOME, "0000.00.03_ExpressionMatrices/TARGET_AML_MPN_DS_NBM_2646Samples_Ribodepleted_RNAseq_geneLevel_dupGenesRemoved_FractionalCounts.RDS"))
 
@@ -4009,11 +3977,6 @@ cyt.genes <- c("GZMA", "PRF1", "GNLY", "GZMH", "GZMM" )
 
 
 ```{r}
-rownames(core.genes.subset)
-any(cyt.genes %in% kegg.all.sym$`hsa05340 Primary immunodeficiency`)
-```
-
-```{r}
 cyt.scores <- CPM[cyt.genes,] %>% 
   as.data.frame() %>% 
   rownames_to_column("gene") %>% 
@@ -4024,7 +3987,11 @@ cyt.scores <- CPM[cyt.genes,] %>%
   left_join(., samps_all, by="Sample") %>% 
   mutate(monocytic_monoblastic=case_when(
     grepl("myelomonocytic|monoblastic|M4|M5", FAB_or_WHO.Classification) ~ "Yes",
-    TRUE ~ "No"))
+    TRUE ~ "No")) %>% 
+  mutate_at(vars(NUP98.Rearranged.Groups.Addl), ~case_when(
+    .=="NUP98-KDM5A" & Any_chr13_Abnormality=="chr13_Abnormality" ~ "NUP98-KDM5A/abn13",
+    TRUE ~ .
+  ))
 
 
 head(cyt.scores)
@@ -4061,12 +4028,22 @@ cyt.score.x <- cyt.scores %>%
 
 table(cyt.score.x$monocytic_monoblastic)
 ```
+```{r}
+cyt.scores %>% 
+  group_by(NUP98.Rearranged.Groups) %>% 
+  summarise(n=n(),
+            mean_score=mean(cytolytic.score),
+            median_score=median(cytolytic.score),
+            standard_dev=sd(cytolytic.score)) %>% 
+  ungroup()
+```
 
 ```{r}
 cc_nup_addl <- c("NUP98-KDM5A" = "magenta",
+                 "NUP98-KDM5A/abn13" = "purple",
                  "NUP98-NSD1" = "steelblue1",
-                 "NUP98-X" = "green1",
-                 "DEK-NUP214"="forestgreen",
+                 "NUP98-X" = "green3",
+                 "DEK-NUP214"="darkolivegreen",
                   "KMT2A"="khaki2",
                  "NPM1"="pink4",
                  "OtherAML" = "grey80",
@@ -4074,21 +4051,28 @@ cc_nup_addl <- c("NUP98-KDM5A" = "magenta",
 ```
 
 ```{r}
-my_comparisons <- list( c("NUP98-KDM5A", "OtherAML"),
-                        c("NUP98-NSD1", "OtherAML"), 
-                         c("NUP98-X", "OtherAML"))
+my_comparisons <- list(c("NUP98-NSD1", "OtherAML"),
+                        c("NUP98-KDM5A", "OtherAML"),
+                        c("NUP98-KDM5A/abn13", "OtherAML"),
+                        c("NUP98-X", "OtherAML"))
+
+fact_levels <- unique(cyt.scores$NUP98.Rearranged.Groups.Addl)
+fact_levels <- c(fact_levels[1], fact_levels[3],fact_levels[c(5:7,9)], fact_levels[2], fact_levels[c(4,8)])
 ```
 
+
 ```{r fig.width=20, fig.height=7}
-# pdf("Figures/TARGET_AML_Cytolytic_Score_violinplot.pdf", height = 5, width = 10)
-ggplot(cyt.scores, aes(x=NUP98.Rearranged.Groups.Addl, y=cytolytic.score, 
+# pdf(file.path(PROJHOME,"Figures/TARGET_AML_Cytolytic_Score_abn13_violinplot.pdf"), height = 5, width = 10)
+ggplot(cyt.scores %>% 
+         mutate(NUP98.Rearranged.Groups.Addl=factor(NUP98.Rearranged.Groups.Addl, levels=fact_levels)),
+       aes(x=NUP98.Rearranged.Groups.Addl, y=cytolytic.score, 
                        color=NUP98.Rearranged.Groups.Addl)) +
-  ggbeeswarm::geom_quasirandom(aes(color=NUP98.Rearranged.Groups.Addl ), #monocytic_monoblastic did not have a strong correlation to the increased cyt score 
-                               alpha=1.0) +
+  #monocytic_monoblastic did not have a strong correlation to the increased cyt score 
+  ggbeeswarm::geom_quasirandom(aes(color=NUP98.Rearranged.Groups.Addl), 
+                               width = 0.3,
+                               alpha=0.8) +
   geom_violin(aes(fill=NUP98.Rearranged.Groups.Addl), color="black", draw_quantiles = c(0.5),
               alpha=0.2) +
-  # geom_boxplot(aes(fill=NUP98.Rearranged.Groups.Addl),
-  #             color="black", alpha=0.2, outlier.shape = NA) +
   scale_color_manual(values=cc_nup_addl) +
   scale_fill_manual(values=cc_nup_addl) +
   stat_compare_means(comparisons = my_comparisons,ref.group = "OtherAML", label="p.signif") +
@@ -4097,13 +4081,15 @@ ggplot(cyt.scores, aes(x=NUP98.Rearranged.Groups.Addl, y=cytolytic.score,
   theme_classic() +
   theme(axis.text.x = element_text(angle = 20, hjust=1, vjust=1), 
         text = element_text(size=14, color="black"))
+
 # dev.off()
 ```
 
 ```{r}
-files <- dir(file.path(PROJHOME,"2020.03.26_NUP98.Rearranged_Collab/DEGs"),
+files <- dir(file.path(PROJHOME,"DEGs"),
                        pattern="NSD1_vs_Other.+csv|KDM5A_vs_Other.+csv|\\.X_vs_Other.+csv",
              full.names = T)
+
 all_DEGs_files <- lapply(files, function(x) read.csv(x)) %>% 
   set_names(c("NUP98.KDM5A", "NUP98.NSD1", "NUP98.X"))
 
@@ -4111,13 +4097,13 @@ all_DEGs <- lapply(all_DEGs_files, function(x) x$gene) %>%
   set_names(c("NUP98-KDM5A DEGs", "NUP98-NSD1 DEGs", "NUP98-X DEGs"))
 
 
-sapply(all_DEGs,length)
-lapply(all_DEGs_files,head)
+# sapply(all_DEGs,length)
+# lapply(all_DEGs_files,head)
+
+lapply(all_DEGs_files, function(x) filter(x, gene %in% cyt.genes) %>% 
+         select(gene, logFC, adj.P.Val))
 ```
 
-```{r}
-lapply(all_DEGs_files, function(x) filter(x, gene %in% cyt.genes))
-```
 
 # DNA methylation data 
 

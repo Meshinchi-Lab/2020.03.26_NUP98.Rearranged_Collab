@@ -42,6 +42,29 @@ library(fusBreakpoint)
 getwd()
 ```
 
+```{r}
+# Define File/Data Locations
+host <- Sys.info()[["nodename"]]
+if(grepl("gizmo", host)){
+  FASTDRIVE <- "/fh/fast/meshinchi_s"
+}else{
+  FASTDRIVE <- "/Users/jsmi26/fast_drive" #/fh/fast/meshinchi_s on the Fred Hutch HPC
+}
+
+RPROJ <- list(PROJHOME=normalizePath(file.path(FASTDRIVE,"workingDir/TARGET/AML_TARGET/RNA/mRNAseq/analysis/")),
+              CDE=normalizePath(file.path(FASTDRIVE, "workingDir/TARGET/AML_TARGET/Clinical/CDE/")),
+              GENREFS=normalizePath(file.path(FASTDRIVE, "workingDir/TARGET/Reference_Data/")),
+              TARGET=normalizePath(file.path(FASTDRIVE, "workingDir/TARGET/AML_TARGET/")),
+              REFS=normalizePath(file.path(FASTDRIVE, "workingDir/0_For_Soheil/jlsmith3/reference_mapping-files/")),
+              HOME=normalizePath(file.path(FASTDRIVE,"workingDir/0_For_Soheil/jlsmith3/RNA_seq_Analysis/")),
+              SCRIPTS=normalizePath(file.path(FASTDRIVE,"workingDir/0_For_Soheil/jlsmith3/github_repos/")),
+              WORKINGDIR=normalizePath(file.path(FASTDRIVE,"workingDir/")))
+
+attach(RPROJ)
+rm(RPROJ)
+
+PROJHOME <- file.path(PROJHOME,"2020.03.26_NUP98.Rearranged_Collab/NUP98_Fusions")
+```
 
 #ClinData
 
@@ -64,6 +87,16 @@ manifest <- read.csv(file.path(TARGET, "SequencingDataMatrix/00_archive/TARGET_A
 
 dim(manifest)
 head(manifest)
+```
+
+
+```{r}
+chr13 <- read.csv(file.path(CDE, "Merged/00_Old/TARGET_AML_0531_1031_merged_CDEs_05.01.21.csv"),
+                    na.strings = c("N/A","#N/A","NA","^$", "^\\.$")) %>% 
+  select(matches("Reg.|chr13|_13"))
+
+
+dim(chr13)
 ```
 
 
@@ -675,8 +708,9 @@ dim(NUP98.primary.groups.clean) #162  41
 # table(NUP98.primary.groups.clean$NUP98_Exons) %>%  length() # 10 breakpoints 
 ```
 
+## 
 ```{r}
-# NUP98.primary.groups<- read.csv("TARGET_AML_NUP98_fusion_exons.csv")
+NUP98.primary.groups.clean <- read.csv(file.path(PROJHOME,"Exon_Juncs/TARGET_AML_NUP98_fusion_exons_3.20.21.csv"))
 
 exon14.chisqr.df <- NUP98.primary.groups.clean %>%  
   filter(!grepl("replicate", Sample)) %>% 
@@ -695,6 +729,12 @@ exon14.chisqr.df <- NUP98.primary.groups.clean %>%
 x2 <- chisq.test(as.matrix(exon14.chisqr.df),simulate.p.value=T)
 x2
 ```
+
+
+```{r}
+table(NUP98.primary.groups.clean$NUP98.Rearranged.Groups, NUP98.primary.groups.clean$NUP98_Exons)
+```
+
 
 ```{r}
 ExonCoords <- NUP98.primary.groups.clean %>%
