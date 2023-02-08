@@ -10,7 +10,7 @@ output: html_document
 
 ```{r setup, cache = FALSE, include = FALSE}
 require(knitr)
-knitr::opts_knit$set(root.dir = file.path(PROJHOME,"2020.03.26_NUP98.Rearranged_Collab"))
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
 ```
 
 ```{r}
@@ -46,6 +46,28 @@ library(DelayedArray)
 library(DeGSEA)
 getwd()
 ```
+
+```{r}
+# Define File/Data Locations
+host <- Sys.info()[["nodename"]]
+if(grepl("gizmo", host)){
+  FASTDRIVE <- "/fh/fast/meshinchi_s"
+}else{
+  FASTDRIVE <- "/Users/jsmi26/fast_drive" #/fh/fast/meshinchi_s on the Fred Hutch HPC
+}
+RPROJ <- list(PROJHOME0=normalizePath(file.path(FASTDRIVE,"workingDir/TARGET/AML_TARGET/RNA/mRNAseq/analysis/")),
+              CDE=normalizePath(file.path(FASTDRIVE, "workingDir/TARGET/AML_TARGET/Clinical/CDE/")),
+              GENREFS=normalizePath(file.path(FASTDRIVE, "workingDir/TARGET/Reference_Data/")),
+              TARGET=normalizePath(file.path(FASTDRIVE, "workingDir/TARGET/AML_TARGET/")),
+              REFS=normalizePath(file.path(FASTDRIVE, "workingDir/0_For_Soheil/jlsmith3/reference_mapping-files/")),
+              HOME=normalizePath(file.path(FASTDRIVE,"workingDir/0_For_Soheil/jlsmith3/RNA_seq_Analysis/")),
+              SCRIPTS=normalizePath(file.path(FASTDRIVE,"workingDir/0_For_Soheil/jlsmith3/github_repos/")),
+              WORKINGDIR=normalizePath(file.path(FASTDRIVE,"workingDir/")))
+attach(RPROJ)
+rm(RPROJ)
+PROJHOME <- file.path(PROJHOME0,"2020.03.26_NUP98.Rearranged_Collab")
+```
+
 
 # Define Functions
 
@@ -85,7 +107,7 @@ make_alpha <- function(color, percent=100){
 # Read in the Clinical Data
 
 ```{r}
-NUP98.cohort <- read.csv("TARGET_AML_NUP98.rearranged_Cleaned_Groups_REG_10.26.2020.csv") %>% 
+NUP98.cohort <- read.csv(file.path(PROJHOME,"TARGET_AML_NUP98.rearranged_Cleaned_Groups_REG_10.26.2020.csv")) %>% 
   mutate(Reg.=as.character(Reg.)) %>% 
   select(-USI)
 
@@ -118,7 +140,7 @@ dim(merged)
 ```
 
 ```{r}
-exon_juncs <- read.csv("NUP98_Fusions/Exon_Juncs/TARGET_AML_NUP98_fusion_exons_3.20.21.csv") %>% 
+exon_juncs <- read.csv(file.path(PROJHOME,"NUP98_Fusions/Exon_Juncs/TARGET_AML_NUP98_fusion_exons_3.20.21.csv")) %>% 
   filter(!grepl("replicate", Sample))
 
 dim(exon_juncs)
@@ -175,7 +197,7 @@ dim(CDEs) #2296  198
 # Read in the counts data
 
 ```{r}
-updated.IDs <- read.csv(file.path(PROJHOME,"0000.00.02_Reference_GeneInfo/GeneSymbol_Ensembl_ID_Conversion_GRCh37_v69_to_v102.csv")) %>% 
+updated.IDs <- read.csv(file.path(PROJHOME0,"0000.00.02_Reference_GeneInfo/GeneSymbol_Ensembl_ID_Conversion_GRCh37_v69_to_v102.csv")) %>% 
   rename_all(~c("gene_id","geneSymbol_Updated"))
 
 dim(updated.IDs)
@@ -183,7 +205,7 @@ head(updated.IDs)
 ```
 
 ```{r}
-ID.map <- read.csv(file.path(PROJHOME,"0000.00.02_Reference_GeneInfo/GeneSymbol_Ensembl_ID_Conversion_GRCh37.69_FromBCCA.csv")) %>% 
+ID.map <- read.csv(file.path(PROJHOME0,"0000.00.02_Reference_GeneInfo/GeneSymbol_Ensembl_ID_Conversion_GRCh37.69_FromBCCA.csv")) %>% 
   left_join(.,updated.IDs, by= "gene_id")
 
 dim(ID.map) #58450     3
@@ -198,7 +220,7 @@ head(ID.map)
 ```{r}
 # cts <- readRDS(file.path("/fh/fast/meshinchi_s/workingDir/TARGET/AML_TARGET/RNA/mRNAseq/analysis/2019.12.31_UMAP_Clustering/Expression_Data/TARGET_AML_DSAML_MPN_NBM_Ribodepleted_dupGenesRemoved_Fractionalcounts.RDS"))
 
-cts <- readRDS(file.path(PROJHOME, "0000.00.03_ExpressionMatrices/BCCA_GRCh37_Ensembl_v69/TARGET_AML_MPN_DS_NBM_3044Samples_Ribodepleted_RNAseq_geneLevel_dupGenesRemoved_FractionalCounts.RDS"))
+cts <- readRDS(file.path(PROJHOME0, "0000.00.03_ExpressionMatrices/BCCA_GRCh37_Ensembl_v69/TARGET_AML_MPN_DS_NBM_3044Samples_Ribodepleted_RNAseq_geneLevel_dupGenesRemoved_FractionalCounts.RDS"))
 
 cts <- as.data.frame(cts)
 gene_ids <- cts[,1:2]
@@ -215,7 +237,7 @@ head(cts[,1:5])
 ```
 
 ```{r eval=FALSE}
-TPMs <- readRDS(file.path(PROJHOME, "0000.00.03_ExpressionMatrices/BCCA_GRCh37_Ensembl_v69/TARGET_AML_MPN_DS_NBM_3044Samples_Ribodepleted_RNAseq_geneLevel_dupGenesRemoved_TPM.RDS"))
+TPMs <- readRDS(file.path(PROJHOME0, "0000.00.03_ExpressionMatrices/BCCA_GRCh37_Ensembl_v69/TARGET_AML_MPN_DS_NBM_3044Samples_Ribodepleted_RNAseq_geneLevel_dupGenesRemoved_TPM.RDS"))
 
 
 TPM <- as.data.frame(TPMs)
@@ -459,7 +481,7 @@ length(umap_NUP98$input_features)
 ```{r}
 sample_info_NUP98 <- sample_info[samps_NUP98$Sample,]
 
-umap_NUP98 <- readRDS("UMAP/NUP98_Only/TARGET_AML_sg8780_NUP98.Rearr_log2Counts_UMAP_NUP98_Results_7.16.20.RDS")
+umap_NUP98 <- readRDS(file.path(PROJHOME,"UMAP/NUP98_Only/TARGET_AML_sg8780_NUP98.Rearr_log2Counts_UMAP_NUP98_Results_7.16.20.RDS"))
 
 #update clinical covars
 umap_NUP98$umap_res <- umap_NUP98$umap_res %>% 
@@ -473,17 +495,27 @@ umap_NUP98$umap_res <- umap_NUP98$umap_res %>%
     Any_chr13_Abnormality == "chr13_Abnormality" & NUP98.Rearranged.Groups == "NUP98-KDM5A" ~ paste(NUP98.Rearranged.Groups, "chr13_abn", sep="/"),
     Any_chr13_Abnormality == "chr13_Abnormality" & NUP98.Rearranged.Groups == "OtherAML" ~ paste(NUP98.Rearranged.Groups, "chr13_abn", sep="/"),
     TRUE ~ NUP98.Rearranged.Groups)) %>% 
-  
   set_rownames(.$Sample)
 
 # length(umap_NUP98$input_features)
 # sapply(umap_NUP98$umap_res %>% select(matches("^cluster")), table, useNA='ifany')
 # write.csv(umap_NUP98$umap_res, "UMAP/NUP98_Only/TARGET_AML_NUP98.R_only_sg8780.csv",row.names = F)
-umap_NUP98$Num_PCs
-length(umap_NUP98$input_features)
+
+
 # umap_NUP98$umap_model$n_neighbors
 # umap_NUP98$umap_model$method
 # umap_NUP98$umap_model$search_k
+```
+
+```{r}
+# table(res$cluster_k5, res$NUP98.Rearranged.Groups)
+```
+
+```{r}
+NUP98_colors <- cc$NUP98.Rearranged[unique(umap_NUP98$umap_res$NUP98.Rearranged.Groups)]
+par(mar=c(8,4,4,2))
+barplot(rep(1,length(NUP98_colors)), col=NUP98_colors, 
+        names.arg = names(NUP98_colors), las=2)
 ```
 
 ### 2D Scatters 
@@ -611,9 +643,8 @@ length(info)
 ```{r}
 # cc.clusters <- colorCodes_aheatmap(df=select(res,matches("^cluster")),T)
 # cc.clusters
-cc.clusters <- list()
-cc.clusters$cluster_k5 <- brewer.pal(n=9,"Set1")[-2][1:5]
-cc.clusters
+cc.clusters <- set_names(c("red","dodgerblue","forestgreen","darkorchid3", "gold"),
+                            levels(res$cluster_k5))
 ```
 
 ```{r}
@@ -622,7 +653,15 @@ ranges <- lapply(res[,c("x","y","z")], range)
 
 # ranges[[1]] <- c(ranges$x[1], ranges$x[2])
 # ranges[2:3] <- lapply(ranges[2:3], expand_coords,y=0)
-ranges
+# ranges
+
+m <- list(
+  l = 50,
+  r = 50,
+  b = 50,
+  t = 50,
+  pad = 200
+)
 ```
 
 ```{r fig.width=16}
@@ -633,8 +672,10 @@ p.NUP98 <- plot_ly() %>%
   #plot diagnostic and normal samples
   add_trace(data=res,
             x = ~x, y = ~y, z = ~z,
-            color =  ~NUP98.Rearranged.Groups, #~cluster_k5,
-            colors = cc$NUP98.Rearranged.Groups, #cc.clusters$cluster_k5,
+            # color =  ~NUP98.Rearranged.Groups, 
+            color = ~cluster_k5,
+            # colors = cc$NUP98.Rearranged.Groups,
+            colors = cc.clusters,
             type='scatter3d',
             mode='markers',
             text=info,
@@ -649,6 +690,7 @@ p.NUP98 <- plot_ly() %>%
   # title=list(text="Pediatric NUP98-Rearranged AML Clustering By Gene Expression",
   layout(font = list(color=textcol,
                                 size=10),
+         margin = m,
          scene = list(xaxis = list(title = 'UMAP_1',
                                    color=textcol,
                                    range=ranges$x,
@@ -945,7 +987,7 @@ dim(TPM_NUP98)
 ```
 
 ```{r}
-marker_test_res <- read.csv("UMAP/NUP98_Only/TARGET_AML_NUP98.R_UMAP_Cluster_Gene_Markers.csv")
+marker_test_res <- read.csv(file.path(PROJHOME,"UMAP/NUP98_Only/TARGET_AML_NUP98.R_UMAP_Cluster_Gene_Markers.csv"))
 
 
 head(marker_test_res)
@@ -1623,47 +1665,30 @@ kdm5A_del13_dim12
 # NUP98_del13_dim12 + kdm5A_del13_dim12
 ```
 
-# NUP98 Figures for Manuscrpt 
-      
+
+### 2D Scatter plots
+
+
+```{r}
+umap_allDX <- readRDS(file.path(PROJHOME,"UMAP/NUP98_Only/TARGET_AML_sg8780_NUP98.Rearr_log2Counts_UMAP_NUP98_Results_7.16.20.RDS"))
+
+dim(umap_allDX$umap_res)
+table(umap_allDX$umap_res$AML_Subtype)
+table(umap_allDX$umap_res$Group)
+length(umap_allDX$input_features)
+
+# umap_allDX$umap_res$cluster_k5
+```
+
 ```{r fig.height=3}
-flevels <- rev(c("NUP98-X", "NUP98-NSD1","NUP98-KDM5A",
-                  "CBFA2T3-GLIS2","del5q","monosomy7",
-                    "RUNX1-RUNX1T1",
-                    "CBFB-MYH11", 
-                    "AML",
-                    "KMT2A",
-                 "NBM",
-                 "CD34_NBM"))
+flevels <- rev(c("NUP98-X", "NUP98-NSD1","NUP98-KDM5A"))
 
 res <- umap_allDX$umap_res %>%
-  # mutate_at(vars(NUP98.Rearranged), 
-  #           ~case_when(
-  #             FLT3.ITD.positive. == "Yes" &
-  #               . %in% c("No.Primary.Fusion.CNV","AML") ~ "FLT3-ITD",
-  #             NPM.mutation. == "Yes" &
-  #               . %in% c("No.Primary.Fusion.CNV","AML") ~ "NPM1",
-  #             TRUE ~ .)) %>%
   mutate_at(vars(NUP98.Rearranged),
                  ~factor(., levels=flevels))
 
 
 NUP98_colors <- cc$NUP98.Rearranged[flevels]
-NUP98_colors["NBM"] <- 'black'
-# NUP98_colors <- NULL
-# NUP98_colors["No.Primary.Fusion.CNV"] <- "azure4"
-# NUP98_colors["AML"] <- "grey80"
-# NUP98_colors["NPM1"] <- "#FDDAEC"
-# NUP98_colors["FLT3-ITD"] <- "#B3CDE3" #"#377EB8"
-# NUP98_colors["KMT2A"] <- "khaki2"
-# NUP98_colors["DEK-NUP214"] <-  "aquamarine3" #"darkslategray3"
-# NUP98_colors["CBFB-MYH11"] <- "burlywood"
-# NUP98_colors["CBFA2T3-GLIS2"] <- "firebrick3"
-# NUP98_colors["RUNX1-RUNX1T1"] <- "sienna3"
-# NUP98_colors["NUP98-KDM5A"] <- "navy"
-# NUP98_colors["NUP98-NSD1"] <- "cornflowerblue"
-# NUP98_colors["Single Mutant"] <- "magenta"
-# NUP98_colors["Double Mutant"] <- "green2"
-
 par(mar=c(8,4,4,2))
 barplot(rep(1,length(NUP98_colors)), col=NUP98_colors, 
         names.arg = names(NUP98_colors), las=2)
@@ -1683,34 +1708,36 @@ labs <- c("Single Mutant"="NUP98 single mutant",
           "No.Primary.Fusion.CNV"="No Fusion/CNV",
           "AML"="Other AML")
 
-thm <- theme(panel.background = element_rect(color = "black", fill="black"),
+thm <- theme(
+  # panel.background = element_rect(color = "black", fill="black"),
             axis.text = element_text(size=22, color="black"),
             axis.title = element_text(size=22, color="black")) 
 
 ellipse_dat <- res %>% 
   filter(grepl("RUNX1|DEK|NUP98|Mutant|KMT2A|CBFB|GLIS2|NPM1|FLT3",
-               NUP98.Double.Single.Allelic.Status)) %>% 
-  mutate(ellipse_groups=ifelse(grepl("Mutant",as.character(NUP98.Double.Single.Allelic.Status)),"NUP98", as.character(NUP98.Double.Single.Allelic.Status))) %>% 
+               NUP98.Rearranged)) %>% 
+  mutate(ellipse_groups=ifelse(grepl("Mutant",as.character(NUP98.Rearranged)),
+                               "NUP98", as.character(NUP98.Rearranged))) %>% 
   droplevels()
 
 
 
-ellipse_colors <- NULL
-ellipse_colors <- NUP98_colors[-c(1:2,10:11)]
-ellipse_colors["NUP98"] <- "dodgerblue2"
+ellipse_colors <- set_names(c("red","dodgerblue","forestgreen","darkorchid3", "gold"),
+                            levels(res$cluster_k5))
+# ellipse_colors <- NUP98_colors[-c(1:2,10:11)]
+# ellipse_colors["NUP98"] <- "dodgerblue2"
 ```
 
-### 2D Scatter plots
 
 ```{r fig.height=7, fig.width=10}
 NUP98_dim12 <- ggplot(res,
-                      aes(x=x,y=y,color=NUP98.Double.Single.Allelic.Status)) +
-      stat_ellipse(data=ellipse_dat,
-                   aes(x=x,y=y, fill=ellipse_groups),
+                      aes(x=x,y=y,color=AML_Subtype, group=cluster_k5)) +
+      stat_ellipse(data=res,
+                   aes(x=x,y=y, fill=cluster_k5, group=cluster_k5),
                    geom = "polygon",
                    size=1.5,
-                   alpha=0.25,
-                   level = 0.75,
+                   alpha=0.15,
+                   level = 0.98,
                    inherit.aes = FALSE) +
       # geom_point(size=3.0,alpha=1,shape=21, stroke = 0.2)+
       geom_point(size=3.0,alpha=1,shape=19, stroke=0.2)+
@@ -1726,21 +1753,18 @@ NUP98_dim12 <- ggplot(res,
       theme(plot.margin = margin(r = 5, unit="mm"))
       
 
-# pdf("TARGET_AML_sg6816_UMAP_dim1_2Dscatter.pdf", height = 7, width=10)
 NUP98_dim12
-# dev.off()
-# saveRDS(NUP98_dim12,"TARGET_AML_sg6816_UMAP_dim1_2Dscatter.RDS")
 ```
 
 ```{r fig.height=7, fig.width=20}
 NUP98_dim13 <- ggplot(res,shape=21,
-                      aes(x=x,y=z,color=NUP98.Double.Single.Allelic.Status)) +
-   stat_ellipse(data=ellipse_dat,
-                   aes(x=x,y=z, fill=NUP98.Double.Single.Allelic.Status),
+                      aes(x=x,y=z,color=AML_Subtype,group=cluster_k5)) +
+   stat_ellipse(data=res,
+                   aes(x=x,y=z, fill=cluster_k5, group=cluster_k5),
                    geom = "polygon",
                    size=1.5,
-                   alpha=0.25,
-                   level = 0.75,
+                   alpha=0.15,
+                   level = 0.95,
                    inherit.aes = FALSE) +
       # geom_point(size=3.0,alpha=1,shape=21, stroke = 0.2)+
       geom_point(size=3.0,alpha=1,shape=19, stroke=0.2)+
@@ -1753,19 +1777,15 @@ NUP98_dim13 <- ggplot(res,shape=21,
       theme_classic() +
       thm +
       theme(legend.text = element_text(size=22),
-            legend.title = element_blank()) +
-      guides(color = guide_legend(override.aes = list(size=7)), fill='none') 
+            legend.title = element_blank()) 
+      # guides(color = guide_legend(override.aes = list(size=7)), fill='none') 
 
 # NUP98_dim13
 
-# pdf("TARGET_AML_sg6816_NUP98_UMAP_dim123.pdf", height = 7, width = 20)
+# pdf(file.path(PROJHOME,"TARGET_AML_NUP98.R_UMAP_dim123.pdf"), height = 7, width = 20)
 grid.arrange(grobs=list(NUP98_dim12,NUP98_dim13),
-             ncol=2, widths=c(1,1.45))
+             ncol=2, widths=c(1,1.25))
 # dev.off()
-
-# saveRDS(arrangeGrob(grobs=list(NUP98_dim12,NUP98_dim13),
-#              ncol=2, widths=c(1,1.45)), "TARGET_AML_sg6816_NUP98_UMAP_dim123_2Dscatter.RDS")
-
 ```
 
 
@@ -1866,14 +1886,7 @@ library(cowplot)
 # 
 # Instead, use the whole dataset as input for a second layer for a group of interest. Change all unwanted color/fill values to NA. Then set the scale_XXX_disrete/scale_XXXX_manual with na.value=NA and/or with na.translate=FALSE to be transparent. Othersize the axes/rotation do not match up because a new min/max for x,y,z coors are used to draw the axes. 
 
-sm_only <- mutate(ellipse_dat,
-                  sm=ifelse(NUP98.Double.Single.Allelic.Status=="Single Mutant",
-                            "Single Mutant", NA))
-other_aml <- mutate(res,
-                    aml=ifelse(NUP98.Double.Single.Allelic.Status %in%
-                        c("No.Primary.Fusion.CNV","AML"), "AML", NA))
 
-  
 theta=-120
 phi=-10
 include_others=TRUE
@@ -1885,20 +1898,18 @@ include_others=TRUE
 bgCol <- "white"
 txtCol <- "black"
 
-p <- ggplot(data=ellipse_dat, 
+p <- ggplot(data=res, 
             mapping=aes(x=x, y=y,z=z, 
-                        # color=NUP98.Double.Single.Allelic.Status,
-                        fill=NUP98.Double.Single.Allelic.Status)) +
+                        fill=NUP98.Rearranged)) +
     axes_3D(theta=theta, phi=phi, color=txtCol)
 
 rotated <-
-  # if(include_others){
   p + stat_3D(data=other_aml,
           aes(x=x, y=y, z=z), color="grey80", #fill=aml
           geom = "point", theta=theta,phi=phi,
           shape=19,size=3.0, alpha=0.3,stroke=0, inherit.aes = FALSE)  
-  # }
-  rotated <- rotated + stat_3D(geom = "point", theta=theta,phi=phi,
+
+rotated <- rotated + stat_3D(geom = "point", theta=theta,phi=phi,
           shape=21,size=3.0,
           color="grey50",
           stroke=0.2,alpha=0.75) +
@@ -1923,23 +1934,11 @@ rotated
 ```
 
 
-```{r}
-output="png"
-# ggsave(filename = paste0("TARGET_AML_sg6816_NUP98_UMAP_FLT3_NPM1_withGreyPoints_brightNUP98_3Dscatter.",
-#                          output),
-#        plot=rotated,
-#        height = 7, width=10,
-#        units="in",
-#        dpi=300,
-#        device=output)
-
-# saveRDS(rotated,"NUP98_UMAP_3Dscatter.RDS")
-```
 
 # Expression of gene partners 
 
 ```{r}
-gene_partners <- read.csv("TARGET_AML_NUP98_gene_pairs.csv")
+gene_partners <- read.csv(file.path(PROJHOME,"TARGET_AML_NUP98_gene_pairs.csv"))
 
 gene_partners
 ```

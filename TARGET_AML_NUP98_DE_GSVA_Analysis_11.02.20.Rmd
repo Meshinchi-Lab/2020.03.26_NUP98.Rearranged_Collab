@@ -1951,9 +1951,9 @@ my_comparisons <- list( c("NUP98-KDM5A", "OtherAML"),
                         c("NUP98-NSD1", "OtherAML"), 
                          c("NUP98-X", "OtherAML"))
 
-colors_abn13 <- c("NUP98-KDM5A" = "magenta",
+colors_abn13 <- c("NUP98-KDM5A" = "magenta1",
                   # "NUP98-KDM5A/del13q" = "mediumorchid4",
-                  "NUP98-KDM5A/chr13_abn" = "mediumorchid4",
+                  "NUP98-KDM5A/chr13_abn" = "purple4",
                  "NUP98-NSD1" = "steelblue1",
                  "NUP98-X" = "green1",
                  "OtherAML" = "grey80",
@@ -1985,23 +1985,19 @@ XandNSD1_sharedExpn <- logCPM[c("MYCN", "PBX3", "DNMT3B"),] %>%
 # head(XandNSD1_sharedExpn)
 # table(XandNSD1_sharedExpn$NUP98.Rearranged.Groups)
 
-XandNSD1_shared.box <- ggplot(XandNSD1_sharedExpn, aes(x=NUP98.Rearranged.Groups, y=Log2CPM)) +
-  # geom_jitter(size=2) +
-  geom_point(aes(color=chr13_Abn_groups), position = position_jitter(seed=2021), size=2, alpha=0.75) +
-  geom_boxplot(aes(fill = NUP98.Rearranged.Groups),  alpha=0.3,outlier.shape = NA, color="black") +
+XandNSD1_shared.box <- ggplot(XandNSD1_sharedExpn, 
+                              aes(x=NUP98.Rearranged.Groups, y=Log2CPM)) +
+  geom_point(data = filter(XandNSD1_sharedExpn, !grepl("KDM5A", chr13_Abn_groups)),
+             mapping = aes(color=chr13_Abn_groups), 
+             position = position_jitter(seed=2021), size=2, alpha=0.75) +
+  geom_point(data = filter(XandNSD1_sharedExpn, grepl("KDM5A", chr13_Abn_groups)),
+            mapping = aes(color=chr13_Abn_groups, shape=chr13_Abn_groups), 
+             position = position_jitter(seed=2021), size=2, alpha=0.75) +
+  geom_boxplot(aes(fill = NUP98.Rearranged.Groups), 
+               alpha=0.3,outlier.shape = NA, color="black") +
   facet_wrap(~gene) +
   scale_fill_manual(values=colors_abn13) +
   scale_color_manual(values=colors_abn13) +
-  # scale_fill_manual(values=c("NUP98-KDM5A" = "magenta",
-  #                "NUP98-NSD1" = "steelblue1",
-  #                "NUP98-X" = "green1",
-  #                "OtherAML" = "grey80",
-  #                "NBM" = "gray50")) +
-  # scale_color_manual(values=c("NUP98-KDM5A" = "magenta",
-  #                "NUP98-NSD1" = "steelblue1",
-  #                "NUP98-X" = "green1",
-  #                "OtherAML" = "grey80",
-  #                "NBM" = "gray40")) +
   theme_classic() +
   labs(x="") +
   stat_compare_means(comparisons = my_comparisons, 
@@ -2019,15 +2015,12 @@ XandNSD1_shared.box
 #Check
 table(XandNSD1_sharedExpn$gene, XandNSD1_sharedExpn$chr13_Abn_groups)
 
-# ggsave(filename = "Figures/Boxplots/TARGET_AML_NUP98.X_NUP98.NSD1_Common_DEGs_boxplot_withChr13Alterations.pdf",
+# ggsave(filename = "TARGET_AML_NUP98.X_NUP98.NSD1_Common_DEGs_boxplot_withChr13Alterations.pdf",
 #        plot=XandNSD1_shared.box, height = 5, width = 10, units = "in", dpi=300)
 
 ```
 
-
 ```{r}
-
-
 lapply(all_DEGs_files, function(x) filter(x, gene %in% c("MYCN", "PBX3", "DNMT3B")) %>% 
          mutate(adj.P.Val=round(adj.P.Val, digits = 4)) %>% 
          select(gene, adj.P.Val) )
@@ -2061,13 +2054,16 @@ XandKDM5A_sharedExpn <- logCPM[c("MLLT3", "IRX3",  "CD79A"),] %>%
 
 XandKDM5A_shared.box <- ggplot(XandKDM5A_sharedExpn, 
                            aes(x=NUP98.Rearranged.Groups, y=Log2CPM)) +
-  # geom_jitter(size=2) +
-  # geom_boxplot(alpha=0.5,outlier.shape = NA, color="black") +
-  # geom_point(data=filter(XandKDM5A_sharedExpn, grepl("^OtherAML$", chr13_Abn_groups)),
-  #            mapping=aes(color=chr13_Abn_groups), position = position_jitter(seed=2021), size=2, alpha=0.75) +
-  #              
-  geom_point(aes(color=chr13_Abn_groups), position = position_jitter(seed=2021), size=2, alpha=0.75) +
-  geom_boxplot(aes(fill = NUP98.Rearranged.Groups),  alpha=0.3,outlier.shape = NA, color="black") +
+  geom_point(data = filter(XandKDM5A_sharedExpn, !grepl("KDM5A", chr13_Abn_groups)),
+             mapping = aes(color=chr13_Abn_groups), 
+             position = position_jitter(seed=2021), size=2, alpha=0.75) +
+  geom_point(data = filter(XandKDM5A_sharedExpn, grepl("KDM5A", chr13_Abn_groups)),
+            mapping = aes(color=chr13_Abn_groups, shape=chr13_Abn_groups), 
+             position = position_jitter(seed=2021), size=2, alpha=0.75) +
+  geom_boxplot(aes(fill = NUP98.Rearranged.Groups), 
+               alpha=0.3,outlier.shape = NA, color="black") +
+  # geom_point(aes(color=chr13_Abn_groups), position = position_jitter(seed=2021), size=2, alpha=0.75) +
+  # geom_boxplot(aes(fill = NUP98.Rearranged.Groups),  alpha=0.3,outlier.shape = NA, color="black") +
   facet_wrap(~gene, scales="fixed") +
   scale_fill_manual(values=colors_abn13) +
   scale_color_manual(values=colors_abn13) +
@@ -2084,7 +2080,7 @@ XandKDM5A_shared.box <- ggplot(XandKDM5A_sharedExpn,
 
 XandKDM5A_shared.box
 
-# ggsave(filename = "Figures/Boxplots/TARGET_AML_NUP98.X_NUP98.KDM5A_Common_DEGs_boxplot_withChr13Alterations.pdf",
+# ggsave(filename = "TARGET_AML_NUP98.X_NUP98.KDM5A_Common_DEGs_boxplot_withChr13Alterations.pdf",
 #        plot = XandKDM5A_shared.box, height = 5, width = 10, units = "in", dpi=300)
 
 ```
